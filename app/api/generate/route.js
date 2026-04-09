@@ -47,6 +47,24 @@ function extractTitle(text, fallback) {
   return firstHeading ? firstHeading.replace(/^#+\s*/, '').trim() : fallback
 }
 
+/** Build a character context block to prepend to the transcript. */
+function buildCharacterContext(characters) {
+  if (!characters.length) return ''
+  const lines = ['=== PARTY CHARACTERS ===']
+  for (const c of characters) {
+    const parts = [c.name]
+    const sheet = [c.race, c.class].filter(Boolean).join(' ')
+    if (sheet) parts.push(sheet)
+    if (c.level) parts.push(`Level ${c.level}`)
+    if (c.background) parts.push(`Background: ${c.background}`)
+    if (c.player) parts.push(`Player: ${c.player}`)
+    lines.push(parts.join(', '))
+    if (c.description) lines.push(`  ${c.description}`)
+  }
+  lines.push('=== END PARTY INFO ===', '')
+  return lines.join('\n') + '\n'
+}
+
 const PROMPT_ID = 'pmpt_69d7215083bc8195a80e445d0e1ba9d9022120c48a15cb71'
 
 export async function POST(request) {
@@ -79,6 +97,21 @@ export async function POST(request) {
     return Response.json({ error: 'File appears to be empty.' }, { status: 400 })
   }
 
+  // Fetch party characters to give the AI context (best-effort)
+  const kv = getKv()
+  let characterContext = ''
+  try {
+    const slugs = await kv.smembers('characters:index')
+    if (slugs.length) {
+      const chars = (await Promise.all(slugs.map(s => kv.get(`character:${s}`)))).filter(Boolean)
+      characterContext = buildCharacterContext(chars)
+    }
+  } catch (err) {
+    console.error('Character fetch error (non-fatal):', err)
+  }
+
+  const fullTranscript = characterContext ? `${characterContext}${transcript}` : transcript
+
   // Call OpenAI Responses API with stored prompt template
   let generatedText
   try {
@@ -91,7 +124,7 @@ export async function POST(request) {
       body: JSON.stringify({
         prompt: {
           id: PROMPT_ID,
-          variables: { transcript },
+          variables: { transcript: fullTranscript },
         },
       }),
     })
@@ -113,7 +146,6 @@ export async function POST(request) {
   // Store result in Redis
   const id = uuidv4()
   const title = extractTitle(generatedText, fileName.replace(/\.[^.]+$/, ''))
-  const kv = getKv()
 
   await kv.set(`result:${id}`, {
     id,

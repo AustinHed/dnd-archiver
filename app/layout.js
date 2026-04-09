@@ -34,6 +34,9 @@ export default function RootLayout({ children }) {
               <a href="/npcs" style={navLinkStyle}>
                 👥 NPCs
               </a>
+              <a href="/characters" style={navLinkStyle}>
+                🧙 Characters
+              </a>
             </nav>
           </header>
 

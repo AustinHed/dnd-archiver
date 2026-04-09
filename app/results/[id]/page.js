@@ -1,6 +1,7 @@
 import { Redis } from '@upstash/redis'
 import { notFound } from 'next/navigation'
 import CopyButton from './CopyButton'
+import DeleteButton from './DeleteButton'
 
 function getKv() {
   return new Redis({
@@ -32,7 +33,10 @@ export default async function ResultPage({ params }) {
             {result.fileName} &middot; {date}
           </p>
         </div>
-        <CopyButton />
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <CopyButton />
+          <DeleteButton id={id} />
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
