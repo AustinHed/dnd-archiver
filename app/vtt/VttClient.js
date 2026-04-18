@@ -119,6 +119,39 @@ function buildTrianglePoints(x, y, side = 130) {
   ]
 }
 
+function polylineTotalLength(points = []) {
+  if (!Array.isArray(points) || points.length < 2) return 0
+  let total = 0
+  for (let i = 0; i < points.length - 1; i += 1) {
+    total += distancePx(points[i], points[i + 1])
+  }
+  return total
+}
+
+function pointAlongPath(points = [], targetDistance = 0) {
+  if (!Array.isArray(points) || !points.length) return null
+  if (points.length === 1) return { ...points[0] }
+  const clampedDistance = Math.max(0, targetDistance)
+  let traversed = 0
+
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]
+    const b = points[i + 1]
+    const segmentLength = distancePx(a, b)
+    if (segmentLength <= 0.001) continue
+    if (traversed + segmentLength >= clampedDistance) {
+      const ratio = (clampedDistance - traversed) / segmentLength
+      return {
+        x: a.x + ((b.x - a.x) * ratio),
+        y: a.y + ((b.y - a.y) * ratio),
+      }
+    }
+    traversed += segmentLength
+  }
+
+  return { ...points[points.length - 1] }
+}
+
 function getBounds(points = []) {
   if (!points.length) return null
   const xs = points.map((point) => point.x)
@@ -657,6 +690,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [mapRenderError, setMapRenderError] = useState('')
   const [pingClock, setPingClock] = useState(Date.now())
   const [shapePreview, setShapePreview] = useState(null)
+  const [animatedTokenPositions, setAnimatedTokenPositions] = useState({})
   const [expandedMenus, setExpandedMenus] = useState({
     mapSetup: true,
     dungeonMaster: true,
@@ -669,6 +703,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [stageHeight, setStageHeight] = useState(720)
   const exploredSyncRef = useRef('')
   const rotateDragRef = useRef(null)
+  const pathAnimationRef = useRef({ rafId: null, tokenId: '' })
 
   const refresh = useCallback(async (customClientId = clientId) => {
     const query = new URLSearchParams()
@@ -1103,6 +1138,25 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   }, [selectedShapeId])
 
   useEffect(() => {
+    return () => {
+      if (pathAnimationRef.current.rafId) {
+        window.cancelAnimationFrame(pathAnimationRef.current.rafId)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const tokenIds = new Set((bundle?.activeState?.tokens ?? []).map((token) => token.id))
+    setAnimatedTokenPositions((prev) => {
+      const next = {}
+      for (const [tokenId, position] of Object.entries(prev)) {
+        if (tokenIds.has(tokenId)) next[tokenId] = position
+      }
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next
+    })
+  }, [bundle?.activeState?.tokens])
+
+  useEffect(() => {
     if (!activeMap || !activeState?.fog?.enabled || !visibility) return
     if (!visibility.visible.length) return
 
@@ -1508,6 +1562,12 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     const { x, y } = event.target.position()
 
     try {
+      setAnimatedTokenPositions((prev) => {
+        if (!prev[tokenId]) return prev
+        const next = { ...prev }
+        delete next[tokenId]
+        return next
+      })
       await callMutation('updateToken', { id: tokenId, x, y })
     } catch (err) {
       setError(err.message)
@@ -1518,21 +1578,65 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!selectedToken || pathPoints.length < 2) return
     if (isPlayer && selectedToken.role !== 'player') return
 
+    const tokenId = selectedToken.id
+    const route = pathPoints.map((point) => ({ x: point.x, y: point.y }))
+    const totalLength = polylineTotalLength(route)
     const destination = pathPoints[pathPoints.length - 1]
+    if (!destination || totalLength <= 0.001) return
+
+    if (pathAnimationRef.current.rafId) {
+      window.cancelAnimationFrame(pathAnimationRef.current.rafId)
+    }
+
+    const msPerPixel = 3.6
+    const durationMs = clamp(totalLength * msPerPixel, 220, 5200)
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    pathAnimationRef.current = { rafId: null, tokenId }
+
+    const animateStep = (timestamp) => {
+      const elapsed = Math.max(0, timestamp - startedAt)
+      const progress = clamp(elapsed / durationMs, 0, 1)
+      const point = pointAlongPath(route, totalLength * progress) || destination
+      setAnimatedTokenPositions((prev) => ({ ...prev, [tokenId]: point }))
+      if (progress >= 1) return
+      pathAnimationRef.current.rafId = window.requestAnimationFrame(animateStep)
+    }
+
+    pathAnimationRef.current.rafId = window.requestAnimationFrame(animateStep)
+
     try {
       await callMutation('updateToken', {
-        id: selectedToken.id,
+        id: tokenId,
         x: destination.x,
         y: destination.y,
       })
+      if (pathAnimationRef.current.rafId) {
+        window.cancelAnimationFrame(pathAnimationRef.current.rafId)
+      }
+      pathAnimationRef.current = { rafId: null, tokenId: '' }
+      setAnimatedTokenPositions((prev) => {
+        const next = { ...prev }
+        delete next[tokenId]
+        return next
+      })
       setPathPoints([])
     } catch (err) {
+      if (pathAnimationRef.current.rafId) {
+        window.cancelAnimationFrame(pathAnimationRef.current.rafId)
+      }
+      pathAnimationRef.current = { rafId: null, tokenId: '' }
+      setAnimatedTokenPositions((prev) => {
+        const next = { ...prev }
+        delete next[tokenId]
+        return next
+      })
       setError(err.message)
     }
   }, [callMutation, isPlayer, pathPoints, selectedToken])
 
   const updateShapeColor = useCallback(async (shape, colorName) => {
     if (!shape?.id) return
+    if (!isDm && shape.kind !== 'darkness') return
     const nextKind = colorName === 'darkness'
       ? 'darkness'
       : (shape.shapeType || shape.kind || 'shape')
@@ -1547,10 +1651,11 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation])
+  }, [callMutation, isDm])
 
   const removeShape = useCallback(async () => {
     if (!selectedShapeId) return
+    if (!isDm && selectedShape?.kind !== 'darkness') return
 
     try {
       if (selectedShape?.kind === 'barrier') {
@@ -1561,7 +1666,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, selectedShape, selectedShapeId])
+  }, [callMutation, isDm, selectedShape, selectedShapeId])
 
   const selectWallStructure = useCallback((wallId) => {
     const ids = wallComponentFromId(activeState?.walls ?? [], wallId)
@@ -1829,8 +1934,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     return {
       fogRects,
-      unseenFill: 'rgba(0,0,0,0.78)',
-      exploredFill: 'rgba(0,0,0,0.52)',
+      unseenFill: 'rgba(0,0,0,0.84)',
+      exploredFill: 'rgba(0,0,0,0.38)',
+      unseenBlur: 22,
+      exploredBlur: 0,
     }
   }, [activeState?.fog, isDm, viewMode, visibility])
 
@@ -2300,6 +2407,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                               updateShapeColor(selectedShape, event.target.value)
                             }}
                             style={{ ...inputStyle, marginTop: '0.4rem' }}
+                            disabled={!isDm && selectedShape.kind !== 'darkness'}
                           >
                             {SHAPE_COLOR_OPTIONS.map((entry) => (
                               <option key={entry.id} value={entry.id}>{entry.label}</option>
@@ -2308,7 +2416,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         </>
                       )}
                       <div style={{ marginTop: '0.4rem' }}>
-                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
+                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth disabled={!isDm && selectedShape.kind !== 'darkness'} />
                       </div>
                     </>
                   )}
@@ -2393,7 +2501,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     />
                     <IconTileButton
                       icon="🏃"
-                      label="Move Token"
+                      label="Animate Move"
                       onClick={finalizePathMove}
                       tone="success"
                       size="small"
@@ -2590,6 +2698,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               {(activeState?.shapes ?? []).map((shape) => {
                 const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
                 const isBarrierSelected = shape.kind === 'barrier' && selectedBarrierIds.has(shape.id)
+                const canManipulateShape = isDm || shape.kind === 'darkness'
                 const barrierOffset = isBarrierSelected && structureDragOffset ? structureDragOffset : { dx: 0, dy: 0 }
                 const mergedShape = preview
                   ? { ...shape, ...preview }
@@ -2611,9 +2720,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       stroke={stroke}
                       fill={fill}
                       strokeWidth={isBarrierSelected ? 3 : 2}
-                      draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : true}
+                      draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : canManipulateShape}
                       onClick={(event) => {
                         event.cancelBubble = true
+                        if (!canManipulateShape) return
                         if (tool === 'select' && shape.kind === 'barrier') {
                           selectBarrierStructure(shape.id)
                         } else {
@@ -2624,6 +2734,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         const node = event.target
                         const dx = node.x() - center.x
                         const dy = node.y() - center.y
+                        if (!canManipulateShape) {
+                          node.position({ x: center.x, y: center.y })
+                          return
+                        }
                         if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                           node.position({ x: center.x, y: center.y })
                           setStructureDragOffset({ dx, dy })
@@ -2632,6 +2746,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       }}
                       onDragEnd={async (event) => {
                         const node = event.target
+                        if (!canManipulateShape) {
+                          node.position({ x: center.x, y: center.y })
+                          return
+                        }
                         const dx = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
                           ? (structureDragOffset?.dx ?? (node.x() - center.x))
                           : (node.x() - center.x)
@@ -2677,9 +2795,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     stroke={stroke}
                     fill={fill}
                     strokeWidth={isBarrierSelected ? 3 : 2}
-                    draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : true}
+                    draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : canManipulateShape}
                     onClick={(event) => {
                       event.cancelBubble = true
+                      if (!canManipulateShape) return
                       if (tool === 'select' && shape.kind === 'barrier') {
                         selectBarrierStructure(shape.id)
                       } else {
@@ -2690,6 +2809,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         const node = event.target
                         const dx = node.x()
                         const dy = node.y()
+                      if (!canManipulateShape) {
+                        node.position({ x: 0, y: 0 })
+                        return
+                      }
                       if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                         node.position({ x: 0, y: 0 })
                         setStructureDragOffset({ dx, dy })
@@ -2698,6 +2821,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     }}
                     onDragEnd={(event) => {
                         const node = event.target
+                      if (!canManipulateShape) {
+                        node.position({ x: 0, y: 0 })
+                        return
+                      }
                       const dx = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
                         ? (structureDragOffset?.dx ?? node.x())
                         : node.x()
@@ -2735,7 +2862,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 )
               })}
 
-              {selectedShape && selectedShapeHandle && selectedShape.shapeType && (
+              {selectedShape && (isDm || selectedShape.kind === 'darkness') && selectedShapeHandle && selectedShape.shapeType && (
                 <Circle
                   key={`${selectedShape.id}:handle:scale`}
                   x={selectedShapeHandle.x}
@@ -2766,7 +2893,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 />
               )}
 
-              {selectedShape && selectedShapeRotateHandle && selectedShape.shapeType && (
+              {selectedShape && (isDm || selectedShape.kind === 'darkness') && selectedShapeRotateHandle && selectedShape.shapeType && (
                 <>
                   <Line
                     points={flattenPoints([selectedShapeRotateHandle.anchor, selectedShapeRotateHandle.handle])}
@@ -2971,11 +3098,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
             </Layer>
 
             <Layer>
-              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
+              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => {
+                const animatedPosition = animatedTokenPositions[token.id]
+                const tokenX = animatedPosition?.x ?? token.x
+                const tokenY = animatedPosition?.y ?? token.y
+                return (
                 <Circle
                   key={token.id}
-                  x={token.x}
-                  y={token.y}
+                  x={tokenX}
+                  y={tokenY}
                   radius={TOKEN_RADIUS[token.size] ?? TOKEN_RADIUS.medium}
                   fill={token.id === selectedTokenId ? '#3b82f6' : '#888'}
                   stroke={RING_COLORS[token.ringColor] ?? 'transparent'}
@@ -3000,25 +3131,32 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                   }}
                   onDragEnd={(event) => onTokenDragEnd(token.id, event)}
                 />
-              ))}
+              )})}
 
-              {(activeState?.tokens ?? []).filter((token) => isDm && token.role === 'npc' && token.hidden && renderTokenIds.has(token.id)).map((token) => (
+              {(activeState?.tokens ?? []).filter((token) => isDm && token.role === 'npc' && token.hidden && renderTokenIds.has(token.id)).map((token) => {
+                const animatedPosition = animatedTokenPositions[token.id]
+                const tokenX = animatedPosition?.x ?? token.x
+                const tokenY = animatedPosition?.y ?? token.y
+                return (
                 <Text
                   key={`${token.id}:hidden-eye`}
-                  x={token.x + 12}
-                  y={token.y - 8}
+                  x={tokenX + 12}
+                  y={tokenY - 8}
                   text="👁️"
                   fontSize={12}
                   listening={false}
                 />
-              ))}
+              )})}
 
               {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
                 (() => {
+                  const animatedPosition = animatedTokenPositions[token.id]
+                  const tokenX = animatedPosition?.x ?? token.x
+                  const tokenY = animatedPosition?.y ?? token.y
                   const label = token.name || 'Token'
                   const width = Math.max(54, (label.length * 7) + 10)
-                  const x = token.x - (width / 2)
-                  const y = token.y - 35
+                  const x = tokenX - (width / 2)
+                  const y = tokenY - 35
                   const renameNpc = () => {
                     if (!isDm || token.role !== 'npc') return
                     const nextName = window.prompt('Rename NPC token', token.name || 'NPC')
@@ -3069,6 +3207,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       width={rect.width}
                       height={rect.height}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
+                      shadowColor={rect.seen ? 'transparent' : 'rgba(0,0,0,0.95)'}
+                      shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
                     />
                   ))}
                 </>
@@ -3304,6 +3444,17 @@ const ringButtonRowStyle = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: '0.35rem',
+}
+
+const focusPillStyle = {
+  padding: '0.35rem 0.58rem',
+  borderRadius: '999px',
+  border: '1px solid #3a3a3a',
+  background: '#1a1a1a',
+  color: '#e5e5e5',
+  fontSize: '0.72rem',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
 }
 
 function ringButtonStyle(active, color, disabled = false) {
