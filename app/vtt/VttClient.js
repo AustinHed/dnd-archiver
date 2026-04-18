@@ -536,7 +536,7 @@ export default function VttClient() {
 
   useEffect(() => {
     setClientId(getClientId())
-  }, [npcTokens])
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -570,7 +570,7 @@ export default function VttClient() {
     return () => {
       mounted = false
     }
-  }, [npcTokens])
+  }, [])
 
   useEffect(() => {
     let mounted = true
