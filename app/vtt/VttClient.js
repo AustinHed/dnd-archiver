@@ -77,22 +77,48 @@ function useMapImage(url) {
   const [imageError, setImageError] = useState('')
 
   useEffect(() => {
+    let cancelled = false
+
     if (!url) {
       setImage(null)
       setImageError('')
       return
     }
 
-    const img = new window.Image()
-    img.crossOrigin = 'anonymous'
-    img.src = url
-    img.onload = () => {
-      setImage(img)
-      setImageError('')
+    const tryLoad = (attempt) => {
+      const img = new window.Image()
+      img.decoding = 'async'
+      if (attempt > 0) {
+        // Secondary attempt keeps CORS mode for hosts that require it.
+        img.crossOrigin = 'anonymous'
+      }
+
+      img.onload = () => {
+        if (cancelled) return
+        setImage(img)
+        setImageError('')
+      }
+
+      img.onerror = () => {
+        if (cancelled) return
+        if (attempt === 0) {
+          const separator = url.includes('?') ? '&' : '?'
+          tryLoad(1, `${url}${separator}retry=${Date.now()}`)
+          return
+        }
+        setImage(null)
+        setImageError('Map image could not be loaded. Check Blob access/store settings.')
+      }
+
+      img.src = attempt > 0
+        ? `${url}${url.includes('?') ? '&' : '?'}retry=${Date.now()}`
+        : url
     }
-    img.onerror = () => {
-      setImage(null)
-      setImageError('Map image could not be loaded. Check Blob access/store settings.')
+
+    tryLoad(0)
+
+    return () => {
+      cancelled = true
     }
   }, [url])
 
