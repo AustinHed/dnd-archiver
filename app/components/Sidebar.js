@@ -8,6 +8,10 @@ export default function Sidebar() {
   const [results, setResults] = useState(null) // null = loading
   const pathname = usePathname()
 
+  if (pathname?.startsWith('/vtt')) {
+    return null
+  }
+
   useEffect(() => {
     fetch('/api/results')
       .then(r => r.json())
