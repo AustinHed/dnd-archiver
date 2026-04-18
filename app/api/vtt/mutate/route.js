@@ -43,8 +43,8 @@ function validatePlayerMutation({ op, payload, currentState }) {
   }
 
   if (op === 'addShape') {
-    if (payload?.kind === 'barrier' || payload?.kind === 'darkness') {
-      return 'Only the Dungeon Master can create barriers or darkness zones.'
+    if (payload?.kind === 'barrier') {
+      return 'Only the Dungeon Master can create barriers.'
     }
     return null
   }
@@ -53,7 +53,7 @@ function validatePlayerMutation({ op, payload, currentState }) {
     const shape = (currentState?.shapes ?? []).find((entry) => entry.id === payload?.id)
     if (!shape) return null
     if (isProtectedShape(shape)) {
-      return 'Only the Dungeon Master can modify barriers or darkness zones.'
+      return 'Only the Dungeon Master can modify barriers.'
     }
     return null
   }
@@ -62,7 +62,7 @@ function validatePlayerMutation({ op, payload, currentState }) {
     const shape = (currentState?.shapes ?? []).find((entry) => entry.id === payload?.id)
     if (!shape) return null
     if (isProtectedShape(shape)) {
-      return 'Only the Dungeon Master can remove barriers or darkness zones.'
+      return 'Only the Dungeon Master can remove barriers.'
     }
     return null
   }

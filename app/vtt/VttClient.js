@@ -1653,7 +1653,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
   const updateShapeColor = useCallback(async (shape, colorName) => {
     if (!shape?.id) return
-    if (!isDm && shape.kind !== 'darkness') return
     const nextKind = colorName === 'darkness'
       ? 'darkness'
       : (shape.shapeType || shape.kind || 'shape')
@@ -1668,11 +1667,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, isDm])
+  }, [callMutation])
 
   const removeShape = useCallback(async () => {
     if (!selectedShapeId) return
-    if (!isDm && selectedShape?.kind !== 'darkness') return
 
     try {
       if (selectedShape?.kind === 'barrier') {
@@ -1683,7 +1681,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, isDm, selectedShape, selectedShapeId])
+  }, [callMutation, selectedShape, selectedShapeId])
 
   const selectWallStructure = useCallback((wallId) => {
     const ids = wallComponentFromId(activeState?.walls ?? [], wallId)
@@ -1859,7 +1857,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!isDm && (MAP_SETUP_TOOL_IDS.includes(toolId) || DM_TOOL_IDS.includes(toolId) || toolId === 'token' || toolId === 'npcToken')) {
       return
     }
-    setTool(toolId)
+    setTool((prev) => (prev === toolId ? '' : toolId))
     if (toolId !== 'select') {
       setStructureDragOffset(null)
     }
@@ -1962,6 +1960,9 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         fogRects,
         unseenFill: 'rgba(0,0,0,0.24)',
         exploredFill: 'rgba(0,0,0,0.24)',
+        unseenBlur: 12,
+        exploredBlur: 10,
+        cornerRadius: Math.max(5, gridSize * 0.45),
       }
     }
 
@@ -1969,8 +1970,9 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       fogRects,
       unseenFill: 'rgba(0,0,0,0.74)',
       exploredFill: 'rgba(0,0,0,0.38)',
-      unseenBlur: 56,
-      exploredBlur: 12,
+      unseenBlur: 74,
+      exploredBlur: 26,
+      cornerRadius: Math.max(5, gridSize * 0.45),
     }
   }, [activeState?.fog, isDm, viewMode, visibility, visionToken?.id])
 
@@ -2059,6 +2061,16 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setTool('')
+        setDraftPoints([])
+        setPointerPosition(null)
+        setMeasureDrag(null)
+        setPathPoints([])
+        setStructureDragOffset(null)
+        return
+      }
+
       if (event.key !== 'Delete' && event.key !== 'Backspace') return
       const activeTag = document.activeElement?.tagName?.toLowerCase()
       const isTyping = activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable
@@ -2439,7 +2451,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                               updateShapeColor(selectedShape, event.target.value)
                             }}
                             style={{ ...inputStyle, marginTop: '0.4rem' }}
-                            disabled={!isDm && selectedShape.kind !== 'darkness'}
                           >
                             {SHAPE_COLOR_OPTIONS.map((entry) => (
                               <option key={entry.id} value={entry.id}>{entry.label}</option>
@@ -2448,7 +2459,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         </>
                       )}
                       <div style={{ marginTop: '0.4rem' }}>
-                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth disabled={!isDm && selectedShape.kind !== 'darkness'} />
+                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
                       </div>
                     </>
                   )}
@@ -2742,7 +2753,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               {(activeState?.shapes ?? []).map((shape) => {
                 const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
                 const isBarrierSelected = shape.kind === 'barrier' && selectedBarrierIds.has(shape.id)
-                const canManipulateShape = isDm || shape.kind === 'darkness'
+                const canManipulateShape = true
                 const barrierOffset = isBarrierSelected && structureDragOffset ? structureDragOffset : { dx: 0, dy: 0 }
                 const mergedShape = preview
                   ? { ...shape, ...preview }
@@ -2767,7 +2778,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : canManipulateShape}
                       onClick={(event) => {
                         event.cancelBubble = true
-                        if (!canManipulateShape) return
                         if (tool === 'select' && shape.kind === 'barrier') {
                           selectBarrierStructure(shape.id)
                         } else {
@@ -2778,10 +2788,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         const node = event.target
                         const dx = node.x() - center.x
                         const dy = node.y() - center.y
-                        if (!canManipulateShape) {
-                          node.position({ x: center.x, y: center.y })
-                          return
-                        }
                         if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                           node.position({ x: center.x, y: center.y })
                           setStructureDragOffset({ dx, dy })
@@ -2790,10 +2796,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       }}
                       onDragEnd={async (event) => {
                         const node = event.target
-                        if (!canManipulateShape) {
-                          node.position({ x: center.x, y: center.y })
-                          return
-                        }
                         const dx = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
                           ? (structureDragOffset?.dx ?? (node.x() - center.x))
                           : (node.x() - center.x)
@@ -2842,7 +2844,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     draggable={shape.kind === 'barrier' ? tool === 'select' && isBarrierSelected : canManipulateShape}
                     onClick={(event) => {
                       event.cancelBubble = true
-                      if (!canManipulateShape) return
                       if (tool === 'select' && shape.kind === 'barrier') {
                         selectBarrierStructure(shape.id)
                       } else {
@@ -2853,10 +2854,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         const node = event.target
                         const dx = node.x()
                         const dy = node.y()
-                      if (!canManipulateShape) {
-                        node.position({ x: 0, y: 0 })
-                        return
-                      }
                       if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                         node.position({ x: 0, y: 0 })
                         setStructureDragOffset({ dx, dy })
@@ -2865,10 +2862,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     }}
                     onDragEnd={(event) => {
                         const node = event.target
-                      if (!canManipulateShape) {
-                        node.position({ x: 0, y: 0 })
-                        return
-                      }
                       const dx = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
                         ? (structureDragOffset?.dx ?? node.x())
                         : node.x()
@@ -2906,7 +2899,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 )
               })}
 
-              {selectedShape && (isDm || selectedShape.kind === 'darkness') && selectedShapeHandle && selectedShape.shapeType && (
+              {selectedShape && selectedShapeHandle && selectedShape.shapeType && (
                 <Circle
                   key={`${selectedShape.id}:handle:scale`}
                   x={selectedShapeHandle.x}
@@ -2937,7 +2930,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 />
               )}
 
-              {selectedShape && (isDm || selectedShape.kind === 'darkness') && selectedShapeRotateHandle && selectedShape.shapeType && (
+              {selectedShape && selectedShapeRotateHandle && selectedShape.shapeType && (
                 <>
                   <Line
                     points={flattenPoints([selectedShapeRotateHandle.anchor, selectedShapeRotateHandle.handle])}
@@ -3250,6 +3243,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       y={rect.y}
                       width={rect.width}
                       height={rect.height}
+                      cornerRadius={fogRenderData.cornerRadius || 0}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
                       shadowColor={rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.95)'}
                       shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
