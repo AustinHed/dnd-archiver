@@ -992,6 +992,14 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     [activeState?.tokens],
   )
 
+  const playerVisionTokens = useMemo(
+    () => playerTokens.map((token) => {
+      const animated = animatedTokenPositions[token.id]
+      return animated ? { ...token, x: animated.x, y: animated.y } : token
+    }),
+    [animatedTokenPositions, playerTokens],
+  )
+
   const npcTokens = useMemo(
     () => (activeState?.tokens ?? []).filter((token) => token.role === 'npc'),
     [activeState?.tokens],
@@ -1012,10 +1020,22 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     [activeState?.tokens, focusedPlayerTokenId],
   )
 
+  const selectedTokenWithLivePosition = useMemo(() => {
+    if (!selectedToken) return null
+    const animated = animatedTokenPositions[selectedToken.id]
+    return animated ? { ...selectedToken, x: animated.x, y: animated.y } : selectedToken
+  }, [animatedTokenPositions, selectedToken])
+
+  const focusedPlayerTokenWithLivePosition = useMemo(() => {
+    if (!focusedPlayerToken) return null
+    const animated = animatedTokenPositions[focusedPlayerToken.id]
+    return animated ? { ...focusedPlayerToken, x: animated.x, y: animated.y } : focusedPlayerToken
+  }, [animatedTokenPositions, focusedPlayerToken])
+
   const visionToken = useMemo(() => {
-    if (viewMode === 'player') return focusedPlayerToken
-    return selectedToken
-  }, [focusedPlayerToken, selectedToken, viewMode])
+    if (viewMode === 'player') return focusedPlayerTokenWithLivePosition
+    return selectedTokenWithLivePosition
+  }, [focusedPlayerTokenWithLivePosition, selectedTokenWithLivePosition, viewMode])
 
   useEffect(() => {
     if (!selectedToken) return
@@ -1135,7 +1155,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }
 
     if (payload.mode === 'dm') {
-      payload.playerTokens = playerTokens
+      payload.playerTokens = playerVisionTokens
     } else {
       payload.token = visionToken
       payload.darkvision = Boolean(visionToken?.darkvision)
@@ -1208,6 +1228,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     isDm,
     viewMode,
     playerTokens,
+    playerVisionTokens,
     visionToken,
     isTokenDragging,
   ])
@@ -1717,6 +1738,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (isPlayer && token.role !== 'player') return
 
     const { x, y } = event.target.position()
+    setAnimatedTokenPositions((prev) => ({ ...prev, [tokenId]: { x, y } }))
 
     try {
       const optimisticPatch = {
@@ -1729,14 +1751,20 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
           },
         },
       }
+      await callMutation('updateToken', { id: tokenId, x, y }, { optimisticPatch })
       setAnimatedTokenPositions((prev) => {
         if (!prev[tokenId]) return prev
         const next = { ...prev }
         delete next[tokenId]
         return next
       })
-      await callMutation('updateToken', { id: tokenId, x, y }, { optimisticPatch })
     } catch (err) {
+      setAnimatedTokenPositions((prev) => {
+        if (!prev[tokenId]) return prev
+        const next = { ...prev }
+        delete next[tokenId]
+        return next
+      })
       setError(err.message)
     }
   }, [activeState?.tokens, callMutation, isPlayer])
