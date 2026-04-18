@@ -2367,6 +2367,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'preparing' }).catch((err) => setError(err.message))}
               tone="neutral"
               active={sessionStatus === 'preparing'}
+              size="small"
             />
             <IconTileButton
               icon="▶️"
@@ -2374,6 +2375,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'active' }).catch((err) => setError(err.message))}
               tone="neutral"
               active={sessionStatus === 'active'}
+              size="small"
             />
             <IconTileButton
               icon="⏹️"
@@ -2381,6 +2383,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               onClick={() => stopSession().catch((err) => setError(err.message))}
               tone="neutral"
               active={sessionStatus === 'closed'}
+              size="small"
             />
           </div>
           <p style={{ margin: 0, color: sessionStatus === 'active' ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
@@ -2402,6 +2405,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 label={TOOL_OPTIONS[toolId].label}
                 onClick={() => selectTool(toolId)}
                 active={tool === toolId}
+                size="small"
               />
             ))}
           </div>
@@ -2488,7 +2492,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               <option key={token.id} value={token.id}>{token.name}</option>
             ))}
           </select>
-          <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" />
+          <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" size="small" />
         </>
       )
     }
