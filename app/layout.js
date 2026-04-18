@@ -23,11 +23,12 @@ export default function RootLayout({ children }) {
             padding: '1.25rem 0',
             marginBottom: '1.5rem',
             borderBottom: '1px solid #2a2a2a',
+            flexWrap: 'wrap',
           }}>
             <a href="/" style={{ textDecoration: 'none', color: 'inherit', flexShrink: 0 }}>
               <h1 style={{ margin: 0, fontSize: '1.35rem', color: '#c8a96e' }}>⚔️ D&D Session Archiver</h1>
             </a>
-            <nav style={{ display: 'flex', gap: '0.25rem' }}>
+            <nav style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
               <a href="/" style={navLinkStyle}>
                 📜 Upload
               </a>
@@ -36,6 +37,9 @@ export default function RootLayout({ children }) {
               </a>
               <a href="/characters" style={navLinkStyle}>
                 🧙 Characters
+              </a>
+              <a href="/vtt" style={navLinkStyle}>
+                🗺️ VTT
               </a>
             </nav>
           </header>

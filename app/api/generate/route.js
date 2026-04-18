@@ -1,12 +1,6 @@
-import { Redis } from '@upstash/redis'
 import { v4 as uuidv4 } from 'uuid'
-
-function getKv() {
-  return new Redis({
-    url: process.env.DND_KV_REST_API_URL,
-    token: process.env.DND_KV_REST_API_TOKEN,
-  })
-}
+import { getKv } from '@/lib/redis'
+import { addResultToIndex } from '@/lib/vttStore'
 
 function slugify(name) {
   return name
@@ -154,6 +148,7 @@ export async function POST(request) {
     title,
     createdAt: new Date().toISOString(),
   })
+  await addResultToIndex(id)
 
   // Auto-extract and link NPCs from the report (best-effort, non-blocking)
   try {

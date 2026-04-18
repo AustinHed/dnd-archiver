@@ -5,14 +5,21 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test tests/**/*.test.mjs"
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",
+    "@vercel/blob": "^2.3.3",
+    "konva": "^10.2.5",
     "mammoth": "^1.8",
     "next": "15",
+    "pdfjs-dist": "^5.6.205",
+    "pusher": "^5.3.3",
+    "pusher-js": "^8.5.0",
     "react": "19",
     "react-dom": "19",
+    "react-konva": "^19.2.3",
     "uuid": "^11"
   }
 }

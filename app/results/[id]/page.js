@@ -1,14 +1,7 @@
-import { Redis } from '@upstash/redis'
 import { notFound } from 'next/navigation'
+import { getKv } from '@/lib/redis'
 import CopyButton from './CopyButton'
 import DeleteButton from './DeleteButton'
-
-function getKv() {
-  return new Redis({
-    url: process.env.DND_KV_REST_API_URL,
-    token: process.env.DND_KV_REST_API_TOKEN,
-  })
-}
 
 export default async function ResultPage({ params }) {
   const { id } = await params
@@ -40,6 +33,41 @@ export default async function ResultPage({ params }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
+        {Array.isArray(result.mapIds) && result.mapIds.length > 0 && (
+          <section>
+            <h3 style={{
+              margin: '0 0 0.6rem',
+              fontSize: '1rem',
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: '#c8a96e',
+              borderBottom: '1px solid #2a2a2a',
+              paddingBottom: '0.4rem',
+            }}>
+              Linked Maps
+            </h3>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              {result.mapIds.map((mapId) => (
+                <a
+                  key={mapId}
+                  href={`/vtt?map=${mapId}`}
+                  style={{
+                    fontSize: '0.8rem',
+                    color: '#c8a96e',
+                    border: '1px solid #3a3222',
+                    borderRadius: '999px',
+                    padding: '0.2rem 0.6rem',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Open Map
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
         {sections.map(({ heading, body }, i) => (
           <section key={i}>
             {heading && (
@@ -76,7 +104,7 @@ function parseReport(text) {
       if (current.body.trim()) sections.push({ ...current, body: current.body.trim() })
       current = { heading: line.replace(/^#+\s*/, ''), body: '' }
     } else {
-      current.body += line + '\n'
+      current.body += `${line}\n`
     }
   }
   if (current.body.trim()) sections.push({ ...current, body: current.body.trim() })
@@ -84,7 +112,6 @@ function parseReport(text) {
   return sections
 }
 
-/** Render a section body with markdown-style formatting. */
 function renderBody(text) {
   const lines = text.split('\n')
   const output = []
@@ -94,25 +121,22 @@ function renderBody(text) {
     const line = lines[i]
     const trimmed = line.trim()
 
-    // Empty line — add spacing
     if (!trimmed) {
       output.push(<div key={i} style={{ height: '0.4em' }} />)
-      i++
+      i += 1
       continue
     }
 
-    // Sub-heading (## or ###)
     if (/^#{2,}\s/.test(line)) {
       output.push(
         <div key={i} style={{ fontWeight: 700, color: '#c8a96e', marginTop: '0.5rem', marginBottom: '0.15rem' }}>
           {renderInline(line.replace(/^#+\s*/, ''))}
-        </div>
+        </div>,
       )
-      i++
+      i += 1
       continue
     }
 
-    // Bullet list item (- or *)
     const bulletMatch = line.match(/^(\s*)[-*]\s+(.*)/)
     if (bulletMatch) {
       const indent = Math.floor(bulletMatch[1].length / 2)
@@ -124,23 +148,19 @@ function renderBody(text) {
         }}>
           <span style={{ color: '#c8a96e', flexShrink: 0 }}>•</span>
           <span>{renderInline(bulletMatch[2])}</span>
-        </div>
+        </div>,
       )
-      i++
+      i += 1
       continue
     }
 
-    // Regular line
-    output.push(
-      <div key={i}>{renderInline(line)}</div>
-    )
-    i++
+    output.push(<div key={i}>{renderInline(line)}</div>)
+    i += 1
   }
 
   return output
 }
 
-/** Parse inline markdown: **bold**, *italic* */
 function renderInline(text) {
   const parts = []
   const re = /\*\*([^*]+)\*\*|\*([^*]+)\*/g
