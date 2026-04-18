@@ -1760,23 +1760,28 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     pathAnimationRef.current = { rafId: null, tokenId }
 
-    const animateStep = (timestamp) => {
-      const elapsed = Math.max(0, timestamp - startedAt)
-      const progress = clamp(elapsed / durationMs, 0, 1)
-      const point = pointAlongPath(route, totalLength * progress) || destination
-      setAnimatedTokenPositions((prev) => ({ ...prev, [tokenId]: point }))
-      if (progress >= 1) return
+    const animationDone = new Promise((resolve) => {
+      const animateStep = (timestamp) => {
+        const elapsed = Math.max(0, timestamp - startedAt)
+        const progress = clamp(elapsed / durationMs, 0, 1)
+        const point = pointAlongPath(route, totalLength * progress) || destination
+        setAnimatedTokenPositions((prev) => ({ ...prev, [tokenId]: point }))
+        if (progress >= 1) {
+          resolve()
+          return
+        }
+        pathAnimationRef.current.rafId = window.requestAnimationFrame(animateStep)
+      }
       pathAnimationRef.current.rafId = window.requestAnimationFrame(animateStep)
-    }
-
-    pathAnimationRef.current.rafId = window.requestAnimationFrame(animateStep)
+    })
 
     try {
-      await callMutation('updateToken', {
+      const mutationDone = callMutation('updateToken', {
         id: tokenId,
         x: destination.x,
         y: destination.y,
       })
+      await Promise.all([animationDone, mutationDone])
       if (pathAnimationRef.current.rafId) {
         window.cancelAnimationFrame(pathAnimationRef.current.rafId)
       }
@@ -2141,8 +2146,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         fogRects,
         unseenFill: 'rgba(0,0,0,0.24)',
         exploredFill: 'rgba(0,0,0,0.24)',
-        unseenBlur: isTokenDragging ? 4 : 10,
-        exploredBlur: isTokenDragging ? 3 : 8,
+        unseenBlur: 10,
+        exploredBlur: 8,
       }
     }
 
@@ -2150,10 +2155,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       fogRects,
       unseenFill: 'rgba(0,0,0,0.74)',
       exploredFill: 'rgba(0,0,0,0.38)',
-      unseenBlur: isTokenDragging ? 18 : 46,
-      exploredBlur: isTokenDragging ? 8 : 18,
+      unseenBlur: 46,
+      exploredBlur: 18,
     }
-  }, [activeState?.fog, isDm, isTokenDragging, viewMode, visibility, visionToken?.id])
+  }, [activeState?.fog, isDm, viewMode, visibility, visionToken?.id])
 
   const visibleTokenIds = useMemo(() => {
     if (!activeState?.tokens?.length) return new Set()
@@ -3450,8 +3455,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       width={rect.width}
                       height={rect.height}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
-                      shadowColor={isTokenDragging ? 'transparent' : (rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.9)')}
-                      shadowBlur={isTokenDragging ? 0 : (rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0))}
+                      shadowColor={rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.9)'}
+                      shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
                     />
                   ))}
                 </>
@@ -3691,6 +3696,7 @@ const menuCascadeContainerStyle = {
   display: 'flex',
   alignItems: 'flex-start',
   gap: '0.35rem',
+  pointerEvents: 'none',
 }
 
 const railStyle = {
@@ -3706,6 +3712,7 @@ const railStyle = {
 const railStackStyle = {
   display: 'grid',
   gap: '0.45rem',
+  pointerEvents: 'auto',
 }
 
 const railButtonStyle = {
@@ -3729,13 +3736,14 @@ const railButtonIconStyle = {
 const menuFlyoutStyle = {
   width: '320px',
   maxHeight: 'calc(100vh - 260px)',
-  display: 'grid',
-  gridTemplateRows: 'auto 1fr',
+  display: 'flex',
+  flexDirection: 'column',
   borderRadius: '14px',
   background: 'rgba(12,12,12,0.78)',
   border: '1px solid rgba(190,190,190,0.25)',
   backdropFilter: 'blur(6px)',
   overflow: 'hidden',
+  pointerEvents: 'auto',
 }
 
 const menuFlyoutHeaderStyle = {
