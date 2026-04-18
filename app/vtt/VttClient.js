@@ -1,20 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import dynamic from 'next/dynamic'
+import { Stage, Layer, Rect, Line, Circle, Text } from 'react-konva'
 import {
   computePathDistanceFeet,
   computeVisibilityGrid,
   distancePx,
   feetPerPixelFromCalibration,
 } from '@/lib/vttGeometry.mjs'
-
-const Stage = dynamic(() => import('react-konva').then((mod) => mod.Stage), { ssr: false })
-const Layer = dynamic(() => import('react-konva').then((mod) => mod.Layer), { ssr: false })
-const Rect = dynamic(() => import('react-konva').then((mod) => mod.Rect), { ssr: false })
-const Line = dynamic(() => import('react-konva').then((mod) => mod.Line), { ssr: false })
-const Circle = dynamic(() => import('react-konva').then((mod) => mod.Circle), { ssr: false })
-const Text = dynamic(() => import('react-konva').then((mod) => mod.Text), { ssr: false })
 
 const TOOL_OPTIONS = [
   { id: 'move', label: 'Move Token' },
