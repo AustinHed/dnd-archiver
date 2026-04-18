@@ -8,6 +8,7 @@ import {
   distancePx,
   feetPerPixelFromCalibration,
 } from '@/lib/vttGeometry.mjs'
+import { applyVttPatch } from '@/lib/vttPatch.mjs'
 
 const TOOL_OPTIONS = {
   select: { id: 'select', label: 'Select' },
@@ -75,6 +76,8 @@ const SHAPE_COLOR_OPTIONS = [
 const SNAP_THRESHOLD_PX = 14
 const PING_FADE_MS = 3000
 const STAGING_AREA_WIDTH = 260
+const VISIBILITY_THROTTLE_MS = 90
+const FOG_SYNC_THROTTLE_MS = 150
 
 function resolvePdfWorkerSrc(version) {
   try {
@@ -696,6 +699,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [pingClock, setPingClock] = useState(Date.now())
   const [shapePreview, setShapePreview] = useState(null)
   const [animatedTokenPositions, setAnimatedTokenPositions] = useState({})
+  const [visibility, setVisibility] = useState(null)
+  const [isTokenDragging, setIsTokenDragging] = useState(false)
   const [activePrimaryPanel, setActivePrimaryPanel] = useState('measure')
   const [activeDmPanel, setActiveDmPanel] = useState(isDm ? 'mapUpload' : '')
 
@@ -703,8 +708,45 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [stageWidth, setStageWidth] = useState(1100)
   const [stageHeight, setStageHeight] = useState(720)
   const exploredSyncRef = useRef('')
+  const exploredSyncTimerRef = useRef(null)
   const rotateDragRef = useRef(null)
   const pathAnimationRef = useRef({ rafId: null, tokenId: '' })
+  const visibilityWorkerRef = useRef(null)
+  const visibilityRequestRef = useRef(0)
+  const lastKnownVisibleRef = useRef({})
+
+  const applyIncomingPatch = useCallback(({ patch, version, map, character }) => {
+    if (character) {
+      setCharacter({
+        moveSpeed: Number(character.moveSpeed) || 30,
+        darkvision: Boolean(character.darkvision),
+      })
+    }
+
+    if (map) {
+      setBundle((prev) => {
+        if (!prev) return prev
+        const maps = (prev.maps ?? []).map((entry) => (entry.id === map.id ? map : entry))
+        const exists = maps.some((entry) => entry.id === map.id)
+        const nextMaps = exists ? maps : [map, ...maps]
+        return {
+          ...prev,
+          maps: nextMaps,
+          activeMap: prev.activeMap?.id === map.id ? map : prev.activeMap,
+        }
+      })
+    }
+
+    if (!patch) return
+    setBundle((prev) => {
+      if (!prev) return prev
+      const patched = applyVttPatch(prev.activeState, patch)
+      const nextState = Number.isFinite(Number(version))
+        ? { ...patched, version: Number(version) }
+        : patched
+      return { ...prev, activeState: nextState }
+    })
+  }, [])
 
   const refresh = useCallback(async (customClientId = clientId) => {
     const query = new URLSearchParams()
@@ -713,11 +755,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       query.set('clientId', customClientId)
     }
     const liveUrl = `/api/vtt/live?${query.toString()}`
-
-    const [liveRes, resultsRes] = await Promise.all([
-      fetch(liveUrl, { cache: 'no-store' }),
-      fetch('/api/results', { cache: 'no-store' }),
-    ])
+    const liveRes = await fetch(liveUrl, { cache: 'no-store' })
 
     if (!liveRes.ok) {
       const body = await liveRes.json().catch(() => ({}))
@@ -733,13 +771,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       })
     }
 
-    if (resultsRes.ok) {
-      const resultsJson = await resultsRes.json()
-      setResults(Array.isArray(resultsJson) ? resultsJson : (resultsJson.results ?? []))
-    }
-
     return liveJson
   }, [clientId, isDm])
+
+  const loadResults = useCallback(async () => {
+    const resultsRes = await fetch('/api/results', { cache: 'no-store' })
+    if (!resultsRes.ok) return
+    const resultsJson = await resultsRes.json()
+    setResults(Array.isArray(resultsJson) ? resultsJson : (resultsJson.results ?? []))
+  }, [])
 
   useEffect(() => {
     setClientId(getClientId())
@@ -782,7 +822,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     async function init() {
       try {
-        const nextBundle = await refresh(clientId)
+        const [nextBundle] = await Promise.all([
+          refresh(clientId),
+          loadResults(),
+        ])
         if (!mounted) return
 
         const firstPlayerId = preferredPlayerTokenId(nextBundle?.activeState?.tokens ?? [])
@@ -806,7 +849,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     return () => {
       mounted = false
     }
-  }, [refresh, clientId, isPlayer])
+  }, [refresh, loadResults, clientId, isPlayer])
 
   useEffect(() => {
     const tokens = bundle?.activeState?.tokens ?? []
@@ -906,10 +949,20 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         'character.updated',
       ]
 
+      const fullRefreshEvents = new Set(['session.started', 'session.stopped', 'map.updated'])
       for (const eventName of events) {
-        channel.bind(eventName, () => {
-          refresh(clientId).catch((err) => {
-            console.error('Failed to refresh after pusher event', err)
+        channel.bind(eventName, (eventPayload = {}) => {
+          if (fullRefreshEvents.has(eventName)) {
+            refresh(clientId).catch((err) => {
+              console.error('Failed to refresh after pusher event', err)
+            })
+            return
+          }
+
+          applyIncomingPatch({
+            patch: eventPayload.patch,
+            version: eventPayload.version,
+            character: eventPayload.patch?.payload?.character,
           })
         })
       }
@@ -926,7 +979,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         pusher.disconnect()
       }
     }
-  }, [refresh, clientId])
+  }, [applyIncomingPatch, refresh, clientId])
 
   const activeMap = bundle?.activeMap ?? null
   const activeState = bundle?.activeState ?? null
@@ -1041,58 +1094,123 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }
   }, [activeState?.darknessZones, activeState?.walls, barrierShapes, selectedStructure.ids, selectedStructure.kind])
 
-  const visibility = useMemo(() => {
-    if (!activeMap || !activeState) return null
-
-    // DM view: show areas visible by at least one player token.
-    if (isDm && viewMode === 'dm') {
-      const playerVisionTokens = (activeState.tokens ?? []).filter((token) => token.role === 'player')
-      if (!playerVisionTokens.length) {
-        return computeVisibilityGrid({
-          state: activeState,
-          mapWidth: activeMap.width,
-          mapHeight: activeMap.height,
-          token: null,
-          darkvision: false,
-          feetPerPixel: feetPerPx,
-        })
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof Worker === 'undefined') return undefined
+    const worker = new Worker(new URL('./visibilityWorker.js', import.meta.url), { type: 'module' })
+    visibilityWorkerRef.current = worker
+    worker.onmessage = (event) => {
+      const data = event.data ?? {}
+      if (data.requestId !== visibilityRequestRef.current) return
+      if (data.error) {
+        console.error('Visibility worker failed', data.error)
+        return
       }
+      setVisibility(data.visibility ?? null)
+    }
+    return () => {
+      visibilityWorkerRef.current = null
+      worker.terminate()
+    }
+  }, [])
 
-      const grids = playerVisionTokens.map((token) => computeVisibilityGrid({
-        state: activeState,
-        mapWidth: activeMap.width,
-        mapHeight: activeMap.height,
-        token,
-        darkvision: Boolean(token.darkvision),
-        feetPerPixel: feetPerPx,
-      }))
-
-      const base = grids[0]
-      const visibleSet = new Set()
-      for (const grid of grids) {
-        for (const cell of grid.visible) {
-          visibleSet.add(cell)
-        }
-      }
-      return {
-        cols: base.cols,
-        rows: base.rows,
-        gridSize: base.gridSize,
-        visible: Array.from(visibleSet),
-      }
+  useEffect(() => {
+    if (!activeMap || !activeState) {
+      setVisibility(null)
+      return undefined
     }
 
-    if (!visionToken) return null
-    const darkvisionEnabled = Boolean(visionToken.darkvision)
-    return computeVisibilityGrid({
-      state: activeState,
+    const requestId = visibilityRequestRef.current + 1
+    visibilityRequestRef.current = requestId
+    const payload = {
+      requestId,
+      mode: isDm && viewMode === 'dm' ? 'dm' : 'player',
       mapWidth: activeMap.width,
       mapHeight: activeMap.height,
-      token: visionToken,
-      darkvision: darkvisionEnabled,
       feetPerPixel: feetPerPx,
-    })
-  }, [activeMap, activeState, feetPerPx, isDm, viewMode, visionToken])
+      state: {
+        walls: activeState.walls ?? [],
+        darknessZones: activeState.darknessZones ?? [],
+        shapes: activeState.shapes ?? [],
+      },
+    }
+
+    if (payload.mode === 'dm') {
+      payload.playerTokens = playerTokens
+    } else {
+      payload.token = visionToken
+      payload.darkvision = Boolean(visionToken?.darkvision)
+    }
+
+    const worker = visibilityWorkerRef.current
+    const delay = isTokenDragging ? VISIBILITY_THROTTLE_MS : 0
+    const timer = window.setTimeout(() => {
+      if (worker) {
+        worker.postMessage(payload)
+        return
+      }
+      if (payload.mode === 'dm') {
+        const playerVisionTokens = payload.playerTokens ?? []
+        if (!playerVisionTokens.length) {
+          setVisibility(computeVisibilityGrid({
+            state: payload.state,
+            mapWidth: payload.mapWidth,
+            mapHeight: payload.mapHeight,
+            token: null,
+            darkvision: false,
+            feetPerPixel: payload.feetPerPixel,
+          }))
+          return
+        }
+        const grids = playerVisionTokens.map((token) => computeVisibilityGrid({
+          state: payload.state,
+          mapWidth: payload.mapWidth,
+          mapHeight: payload.mapHeight,
+          token,
+          darkvision: Boolean(token.darkvision),
+          feetPerPixel: payload.feetPerPixel,
+        }))
+        const base = grids[0]
+        const visibleSet = new Set()
+        for (const grid of grids) {
+          for (const cell of grid.visible) visibleSet.add(cell)
+        }
+        setVisibility({
+          cols: base.cols,
+          rows: base.rows,
+          gridSize: base.gridSize,
+          visible: Array.from(visibleSet),
+        })
+        return
+      }
+      if (!payload.token) {
+        setVisibility(null)
+        return
+      }
+      setVisibility(computeVisibilityGrid({
+        state: payload.state,
+        mapWidth: payload.mapWidth,
+        mapHeight: payload.mapHeight,
+        token: payload.token,
+        darkvision: Boolean(payload.darkvision),
+        feetPerPixel: payload.feetPerPixel,
+      }))
+    }, delay)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    activeMap?.id,
+    activeMap?.width,
+    activeMap?.height,
+    activeState?.walls,
+    activeState?.darknessZones,
+    activeState?.shapes,
+    feetPerPx,
+    isDm,
+    viewMode,
+    playerTokens,
+    visionToken,
+    isTokenDragging,
+  ])
 
   const pathFeet = useMemo(() => computePathDistanceFeet(pathPoints, feetPerPx), [pathPoints, feetPerPx])
   const movementRemaining = Number(character.moveSpeed) - pathFeet
@@ -1151,6 +1269,9 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       if (pathAnimationRef.current.rafId) {
         window.cancelAnimationFrame(pathAnimationRef.current.rafId)
       }
+      if (exploredSyncTimerRef.current) {
+        window.clearTimeout(exploredSyncTimerRef.current)
+      }
     }
   }, [])
 
@@ -1166,38 +1287,86 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   }, [bundle?.activeState?.tokens])
 
   useEffect(() => {
-    if (!activeMap || !activeState?.fog?.enabled || !visibility) return
+    lastKnownVisibleRef.current = {}
+    exploredSyncRef.current = ''
+  }, [activeMap?.id, activeState?.fog?.gridSize])
+
+  useEffect(() => {
+    if ((activeState?.fog?.exploredCells ?? []).length === 0) {
+      lastKnownVisibleRef.current = {}
+      exploredSyncRef.current = ''
+    }
+  }, [activeState?.fog?.exploredCells])
+
+  useEffect(() => {
+    if (!activeMap || !activeState?.fog?.enabled || !visibility) return undefined
     if (isDm || viewMode !== 'player' || visionToken?.role !== 'player') return
     if (!visibility.visible.length) return
+
+    const bucketId = `${activeMap.id}:${visionToken.id}:${visibility.gridSize}:${visibility.cols}:${visibility.rows}`
+    const known = lastKnownVisibleRef.current[bucketId] ?? new Set()
+    const delta = []
+    for (const cell of visibility.visible) {
+      if (!known.has(cell)) {
+        known.add(cell)
+        delta.push(cell)
+      }
+    }
+    lastKnownVisibleRef.current[bucketId] = known
+    if (!delta.length) return
 
     const payload = {
       mapId: activeMap.id,
       op: 'mergeFogExplored',
       actorId: clientId,
+      actorRole: isDm ? 'dm' : 'player',
       payload: {
         tokenId: visionToken.id,
-        exploredCells: visibility.visible,
+        delta,
         cols: visibility.cols,
         rows: visibility.rows,
         gridSize: visibility.gridSize,
       },
     }
-
     const hash = JSON.stringify(payload.payload)
     if (exploredSyncRef.current === hash) return
     exploredSyncRef.current = hash
 
-    fetch('/api/vtt/mutate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).catch((err) => {
-      console.error('Failed to merge explored cells', err)
-    })
-  }, [activeMap, activeState?.fog?.enabled, clientId, isDm, viewMode, visibility, visionToken?.id, visionToken?.role])
+    if (exploredSyncTimerRef.current) {
+      window.clearTimeout(exploredSyncTimerRef.current)
+    }
+    exploredSyncTimerRef.current = window.setTimeout(() => {
+      fetch('/api/vtt/mutate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then((res) => res.json().catch(() => ({})))
+        .then((data) => {
+          if (data?.patch) {
+            applyIncomingPatch({ patch: data.patch, version: data.version })
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to merge explored cells', err)
+        })
+    }, FOG_SYNC_THROTTLE_MS)
 
-  const callMutation = useCallback(async (op, payload) => {
+    return () => {
+      if (exploredSyncTimerRef.current) {
+        window.clearTimeout(exploredSyncTimerRef.current)
+      }
+    }
+  }, [activeMap, activeState?.fog?.enabled, applyIncomingPatch, clientId, isDm, viewMode, visibility, visionToken?.id, visionToken?.role])
+
+  const callMutation = useCallback(async (op, payload, options = {}) => {
     if (!activeMap) return null
+    if (options.optimisticPatch) {
+      applyIncomingPatch({
+        patch: options.optimisticPatch,
+        version: options.optimisticVersion,
+      })
+    }
 
     const res = await fetch('/api/vtt/mutate', {
       method: 'POST',
@@ -1216,23 +1385,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       throw new Error(data.error || `Failed operation: ${op}`)
     }
 
-    if (data.state) {
-      setBundle((prev) => {
-        if (!prev) return prev
-        return { ...prev, activeState: data.state }
-      })
-    }
-
-    if (data.map) {
-      setBundle((prev) => {
-        if (!prev) return prev
-        const maps = (prev.maps ?? []).map((map) => (map.id === data.map.id ? data.map : map))
-        return { ...prev, maps, activeMap: data.map }
-      })
-    }
+    applyIncomingPatch(data)
 
     return data
-  }, [activeMap, clientId, isDm])
+  }, [activeMap, applyIncomingPatch, clientId, isDm])
 
   const setSessionState = useCallback(async ({ mapId, status }) => {
     const res = await fetch('/api/vtt/live/start', {
@@ -1512,7 +1668,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       try {
         const payload = createMapShapePayload(shapeDraftType, pointer.x, pointer.y, 'blue')
         const data = await callMutation('addShape', payload)
-        const created = data?.state?.shapes?.[data.state.shapes.length - 1]
+        const created = data?.patch?.type === 'shape.added' ? data.patch.payload?.shape : null
         if (created?.id) {
           setSelectedShapeId(created.id)
         }
@@ -1545,7 +1701,17 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     setMeasureDrag(null)
   }, [tool])
 
+  const onTokenDragStart = useCallback(() => {
+    setIsTokenDragging(true)
+  }, [])
+
+  const onTokenDragMove = useCallback((tokenId, event) => {
+    const { x, y } = event.target.position()
+    setAnimatedTokenPositions((prev) => ({ ...prev, [tokenId]: { x, y } }))
+  }, [])
+
   const onTokenDragEnd = useCallback(async (tokenId, event) => {
+    setIsTokenDragging(false)
     const token = (activeState?.tokens ?? []).find((entry) => entry.id === tokenId)
     if (!token) return
     if (isPlayer && token.role !== 'player') return
@@ -1553,13 +1719,23 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     const { x, y } = event.target.position()
 
     try {
+      const optimisticPatch = {
+        type: 'token.updated',
+        payload: {
+          token: {
+            ...token,
+            x,
+            y,
+          },
+        },
+      }
       setAnimatedTokenPositions((prev) => {
         if (!prev[tokenId]) return prev
         const next = { ...prev }
         delete next[tokenId]
         return next
       })
-      await callMutation('updateToken', { id: tokenId, x, y })
+      await callMutation('updateToken', { id: tokenId, x, y }, { optimisticPatch })
     } catch (err) {
       setError(err.message)
     }
@@ -1820,8 +1996,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       return
     }
 
-    await refresh()
-  }, [activeMap, clientId, linkResultId, refresh])
+    await Promise.all([refresh(), loadResults()])
+  }, [activeMap, clientId, linkResultId, loadResults, refresh])
 
   useEffect(() => {
     if (!isDm && activeDmPanel) setActiveDmPanel('')
@@ -1965,8 +2141,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         fogRects,
         unseenFill: 'rgba(0,0,0,0.24)',
         exploredFill: 'rgba(0,0,0,0.24)',
-        unseenBlur: 12,
-        exploredBlur: 10,
+        unseenBlur: isTokenDragging ? 4 : 10,
+        exploredBlur: isTokenDragging ? 3 : 8,
       }
     }
 
@@ -1974,10 +2150,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       fogRects,
       unseenFill: 'rgba(0,0,0,0.74)',
       exploredFill: 'rgba(0,0,0,0.38)',
-      unseenBlur: 74,
-      exploredBlur: 26,
+      unseenBlur: isTokenDragging ? 18 : 46,
+      exploredBlur: isTokenDragging ? 8 : 18,
     }
-  }, [activeState?.fog, isDm, viewMode, visibility, visionToken?.id])
+  }, [activeState?.fog, isDm, isTokenDragging, viewMode, visibility, visionToken?.id])
 
   const visibleTokenIds = useMemo(() => {
     if (!activeState?.tokens?.length) return new Set()
@@ -2649,6 +2825,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               onMouseLeave={() => {
                 setPointerPosition(null)
                 if (tool === 'measure') setMeasureDrag(null)
+                setIsTokenDragging(false)
               }}
               style={{ position: 'absolute', left: 0, top: 0, background: 'transparent' }}
             >
@@ -2823,7 +3000,16 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         if (shape.kind === 'barrier') {
                           setMapUndoStack((prev) => [{ op: 'updateShape', payload: { id: shape.id, points: shape.points } }, ...prev].slice(0, 20))
                         }
-                        callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
+                        callMutation(
+                          'updateShape',
+                          { id: shape.id, ...payload },
+                          {
+                            optimisticPatch: {
+                              type: 'shape.updated',
+                              payload: { shape: { ...shape, ...payload } },
+                            },
+                          },
+                        ).catch((err) => {
                           setError(err.message)
                         })
                         setShapePreview(null)
@@ -2889,7 +3075,16 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       if (shape.kind === 'barrier') {
                         setMapUndoStack((prev) => [{ op: 'updateShape', payload: { id: shape.id, points: shape.points } }, ...prev].slice(0, 20))
                       }
-                      callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
+                      callMutation(
+                        'updateShape',
+                        { id: shape.id, ...payload },
+                        {
+                          optimisticPatch: {
+                            type: 'shape.updated',
+                            payload: { shape: { ...shape, ...payload } },
+                          },
+                        },
+                      ).catch((err) => {
                         setError(err.message)
                       })
                       setShapePreview(null)
@@ -2921,6 +3116,11 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     callMutation('updateShape', {
                       id: selectedShape.id,
                       ...payload,
+                    }, {
+                      optimisticPatch: {
+                        type: 'shape.updated',
+                        payload: { shape: { ...selectedShape, ...payload } },
+                      },
                     }).catch((err) => {
                       setError(err.message)
                     })
@@ -2982,6 +3182,11 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       callMutation('updateShape', {
                         id: selectedShape.id,
                         ...payload,
+                      }, {
+                        optimisticPatch: {
+                          type: 'shape.updated',
+                          payload: { shape: { ...selectedShape, ...payload } },
+                        },
                       }).catch((err) => {
                         setError(err.message)
                       })
@@ -3148,6 +3353,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                   stroke={RING_COLORS[token.ringColor] ?? 'transparent'}
                   strokeWidth={4}
                   draggable={isDm || token.role === 'player'}
+                  onDragStart={onTokenDragStart}
+                  onDragMove={(event) => onTokenDragMove(token.id, event)}
                   onClick={(event) => {
                     event.cancelBubble = true
                     if (isPlayer && token.role !== 'player') return
@@ -3243,8 +3450,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       width={rect.width}
                       height={rect.height}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
-                      shadowColor={rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.95)'}
-                      shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
+                      shadowColor={isTokenDragging ? 'transparent' : (rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.9)')}
+                      shadowBlur={isTokenDragging ? 0 : (rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0))}
                     />
                   ))}
                 </>

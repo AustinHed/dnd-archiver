@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { emitVttEvent } from '@/lib/pusher'
-import { mergeExploredCells } from '@/lib/vttGeometry.mjs'
+import { mergeExploredCellsDelta } from '@/lib/vttGeometry.mjs'
 import { createDefaultVttState } from '@/lib/vttDefaults'
 import {
   getMap,
@@ -131,27 +131,37 @@ function normalizeShape(raw, defaults = {}) {
   }
 }
 
-function eventForOp(op) {
-  if (op === 'ping') return 'ping.created'
-  if (op === 'setCharacter') return 'character.updated'
-  if (op.startsWith('setFog') || op.startsWith('mergeFog') || op === 'resetFogExplored') return 'fog.updated'
-  if (op.includes('Token')) return 'token.updated'
-  if (op.includes('Shape') || op.includes('Wall') || op.includes('Darkness')) return 'shape.updated'
+function eventForPatchType(type) {
+  if (type === 'ping.added' || type === 'ping.cleared') return 'ping.created'
+  if (type === 'character.updated') return 'character.updated'
+  if (type.startsWith('fog.')) return 'fog.updated'
+  if (type.startsWith('token.')) return 'token.updated'
+  if (type.startsWith('shape.') || type.startsWith('wall.') || type.startsWith('darkness.')) return 'shape.updated'
   return 'map.updated'
 }
 
-function applyMutation(currentState, op, payload) {
+function getTokenById(state, tokenId) {
+  return (state.tokens ?? []).find((token) => token.id === tokenId) ?? null
+}
+
+export function applyMutation(currentState, op, payload) {
   switch (op) {
     case 'addWall': {
       const points = ensurePoints(payload?.points, { min: 2 })
       if (!points) return null
-      const segments = toSegments(points)
+      const segments = toSegments(points).map((segment) => ({ id: uuidv4(), ...segment }))
       return {
-        ...currentState,
-        walls: [
-          ...(currentState.walls ?? []),
-          ...segments.map((segment) => ({ id: uuidv4(), ...segment })),
-        ],
+        nextState: {
+          ...currentState,
+          walls: [
+            ...(currentState.walls ?? []),
+            ...segments,
+          ],
+        },
+        patch: {
+          type: 'wall.added',
+          payload: { walls: segments },
+        },
       }
     }
     case 'addDarknessZone': {
@@ -161,16 +171,28 @@ function applyMutation(currentState, op, payload) {
       })
       if (!shape) return null
       return {
-        ...currentState,
-        darknessZones: [...(currentState.darknessZones ?? []), shape],
+        nextState: {
+          ...currentState,
+          darknessZones: [...(currentState.darknessZones ?? []), shape],
+        },
+        patch: {
+          type: 'darkness.added',
+          payload: { zone: shape },
+        },
       }
     }
     case 'removeDarknessZone': {
       const zoneId = payload?.id
       if (!zoneId) return null
       return {
-        ...currentState,
-        darknessZones: (currentState.darknessZones ?? []).filter((zone) => zone.id !== zoneId),
+        nextState: {
+          ...currentState,
+          darknessZones: (currentState.darknessZones ?? []).filter((zone) => zone.id !== zoneId),
+        },
+        patch: {
+          type: 'darkness.removed',
+          payload: { id: zoneId },
+        },
       }
     }
     case 'restoreDarknessZone': {
@@ -180,16 +202,28 @@ function applyMutation(currentState, op, payload) {
       })
       if (!zone) return null
       return {
-        ...currentState,
-        darknessZones: [...(currentState.darknessZones ?? []), zone],
+        nextState: {
+          ...currentState,
+          darknessZones: [...(currentState.darknessZones ?? []), zone],
+        },
+        patch: {
+          type: 'darkness.added',
+          payload: { zone },
+        },
       }
     }
     case 'addShape': {
       const shape = normalizeShape(payload)
       if (!shape) return null
       return {
-        ...currentState,
-        shapes: [...(currentState.shapes ?? []), shape],
+        nextState: {
+          ...currentState,
+          shapes: [...(currentState.shapes ?? []), shape],
+        },
+        patch: {
+          type: 'shape.added',
+          payload: { shape },
+        },
       }
     }
     case 'updateWall': {
@@ -201,21 +235,35 @@ function applyMutation(currentState, op, payload) {
       const nextA = { x: Number(a.x), y: Number(a.y) }
       const nextB = { x: Number(b.x), y: Number(b.y) }
       if (!Number.isFinite(nextA.x) || !Number.isFinite(nextA.y) || !Number.isFinite(nextB.x) || !Number.isFinite(nextB.y)) return null
+      const walls = (currentState.walls ?? []).map((wall) => (
+        wall.id === wallId
+          ? { ...wall, a: nextA, b: nextB }
+          : wall
+      ))
+      const updatedWall = walls.find((wall) => wall.id === wallId)
       return {
-        ...currentState,
-        walls: (currentState.walls ?? []).map((wall) => (
-          wall.id === wallId
-            ? { ...wall, a: nextA, b: nextB }
-            : wall
-        )),
+        nextState: {
+          ...currentState,
+          walls,
+        },
+        patch: {
+          type: 'wall.updated',
+          payload: { wall: updatedWall ?? { id: wallId, a: nextA, b: nextB } },
+        },
       }
     }
     case 'removeWall': {
       const wallId = payload?.id
       if (!wallId) return null
       return {
-        ...currentState,
-        walls: (currentState.walls ?? []).filter((wall) => wall.id !== wallId),
+        nextState: {
+          ...currentState,
+          walls: (currentState.walls ?? []).filter((wall) => wall.id !== wallId),
+        },
+        patch: {
+          type: 'wall.removed',
+          payload: { id: wallId },
+        },
       }
     }
     case 'restoreWall': {
@@ -224,9 +272,16 @@ function applyMutation(currentState, op, payload) {
       const nextA = { x: Number(wall.a.x), y: Number(wall.a.y) }
       const nextB = { x: Number(wall.b.x), y: Number(wall.b.y) }
       if (!Number.isFinite(nextA.x) || !Number.isFinite(nextA.y) || !Number.isFinite(nextB.x) || !Number.isFinite(nextB.y)) return null
+      const nextWall = { id: wall.id, a: nextA, b: nextB }
       return {
-        ...currentState,
-        walls: [...(currentState.walls ?? []), { id: wall.id, a: nextA, b: nextB }],
+        nextState: {
+          ...currentState,
+          walls: [...(currentState.walls ?? []), nextWall],
+        },
+        patch: {
+          type: 'wall.added',
+          payload: { walls: [nextWall] },
+        },
       }
     }
     case 'updateShape': {
@@ -238,27 +293,42 @@ function applyMutation(currentState, op, payload) {
         : undefined
       const candidateRadius = Number(payload.radius)
 
+      const shapes = (currentState.shapes ?? []).map((shape) => (
+        shape.id === shapeId
+          ? {
+              ...shape,
+              ...payload,
+              points: candidatePoints ?? shape.points,
+              center: candidateCenter ?? shape.center,
+              radius: Number.isFinite(candidateRadius) ? candidateRadius : shape.radius,
+            }
+          : shape
+      ))
+      const updatedShape = shapes.find((shape) => shape.id === shapeId)
+
       return {
-        ...currentState,
-        shapes: (currentState.shapes ?? []).map((shape) => (
-          shape.id === shapeId
-            ? {
-                ...shape,
-                ...payload,
-                points: candidatePoints ?? shape.points,
-                center: candidateCenter ?? shape.center,
-                radius: Number.isFinite(candidateRadius) ? candidateRadius : shape.radius,
-              }
-            : shape
-        )),
+        nextState: {
+          ...currentState,
+          shapes,
+        },
+        patch: {
+          type: 'shape.updated',
+          payload: { shape: updatedShape },
+        },
       }
     }
     case 'removeShape': {
       const shapeId = payload?.id
       if (!shapeId) return null
       return {
-        ...currentState,
-        shapes: (currentState.shapes ?? []).filter((shape) => shape.id !== shapeId),
+        nextState: {
+          ...currentState,
+          shapes: (currentState.shapes ?? []).filter((shape) => shape.id !== shapeId),
+        },
+        patch: {
+          type: 'shape.removed',
+          payload: { id: shapeId },
+        },
       }
     }
     case 'addToken': {
@@ -268,71 +338,102 @@ function applyMutation(currentState, op, payload) {
       const role = payload?.role ?? 'npc'
       const name = payload?.name ?? 'Token'
 
-      // Player tokens are unique by character name per map.
       if (role === 'player') {
         const duplicate = (currentState.tokens ?? []).find((token) => token.role === 'player' && token.name === name)
         if (duplicate) {
+          const tokens = (currentState.tokens ?? []).map((token) => (
+            token.id === duplicate.id
+              ? {
+                  ...token,
+                  x,
+                  y,
+                  ringColor: payload?.ringColor ?? token.ringColor,
+                  darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
+                }
+              : token
+          ))
+          const updated = getTokenById({ ...currentState, tokens }, duplicate.id)
           return {
-            ...currentState,
-            tokens: (currentState.tokens ?? []).map((token) => (
-              token.id === duplicate.id
-                ? {
-                    ...token,
-                    x,
-                    y,
-                    ringColor: payload?.ringColor ?? token.ringColor,
-                    darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
-                  }
-                : token
-            )),
+            nextState: {
+              ...currentState,
+              tokens,
+            },
+            patch: {
+              type: 'token.updated',
+              payload: { token: updated },
+            },
           }
         }
       }
 
+      const token = {
+        id: uuidv4(),
+        name,
+        size: payload?.size ?? 'medium',
+        ringColor: payload?.ringColor ?? 'clear',
+        role,
+        darkvision: Boolean(payload?.darkvision),
+        hidden: role === 'npc' ? Boolean(payload?.hidden) : false,
+        x,
+        y,
+      }
+
       return {
-        ...currentState,
-        tokens: [
-          ...(currentState.tokens ?? []),
-          {
-            id: uuidv4(),
-            name,
-            size: payload?.size ?? 'medium',
-            ringColor: payload?.ringColor ?? 'clear',
-            role,
-            darkvision: Boolean(payload?.darkvision),
-            hidden: role === 'npc' ? Boolean(payload?.hidden) : false,
-            x,
-            y,
-          },
-        ],
+        nextState: {
+          ...currentState,
+          tokens: [
+            ...(currentState.tokens ?? []),
+            token,
+          ],
+        },
+        patch: {
+          type: 'token.added',
+          payload: { token },
+        },
       }
     }
     case 'updateToken': {
       const tokenId = payload?.id
       if (!tokenId) return null
 
+      const tokens = (currentState.tokens ?? []).map((token) => (
+        token.id === tokenId
+          ? {
+              ...token,
+              ...payload,
+              x: Number.isFinite(Number(payload.x)) ? Number(payload.x) : token.x,
+              y: Number.isFinite(Number(payload.y)) ? Number(payload.y) : token.y,
+              darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
+              hidden: payload?.hidden !== undefined ? Boolean(payload.hidden) : token.hidden,
+            }
+          : token
+      ))
+      const updated = getTokenById({ ...currentState, tokens }, tokenId)
+      if (!updated) return null
+
       return {
-        ...currentState,
-        tokens: (currentState.tokens ?? []).map((token) => (
-          token.id === tokenId
-            ? {
-                ...token,
-                ...payload,
-                x: Number.isFinite(Number(payload.x)) ? Number(payload.x) : token.x,
-                y: Number.isFinite(Number(payload.y)) ? Number(payload.y) : token.y,
-                darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
-                hidden: payload?.hidden !== undefined ? Boolean(payload.hidden) : token.hidden,
-              }
-            : token
-        )),
+        nextState: {
+          ...currentState,
+          tokens,
+        },
+        patch: {
+          type: 'token.updated',
+          payload: { token: updated },
+        },
       }
     }
     case 'removeToken': {
       const tokenId = payload?.id
       if (!tokenId) return null
       return {
-        ...currentState,
-        tokens: (currentState.tokens ?? []).filter((token) => token.id !== tokenId),
+        nextState: {
+          ...currentState,
+          tokens: (currentState.tokens ?? []).filter((token) => token.id !== tokenId),
+        },
+        patch: {
+          type: 'token.removed',
+          payload: { id: tokenId },
+        },
       }
     }
     case 'ping': {
@@ -349,27 +450,48 @@ function applyMutation(currentState, op, payload) {
 
       const all = [...(currentState.pings ?? []), ping]
       return {
-        ...currentState,
-        pings: all.slice(-20),
+        nextState: {
+          ...currentState,
+          pings: all.slice(-20),
+        },
+        patch: {
+          type: 'ping.added',
+          payload: { ping },
+        },
       }
     }
     case 'clearPings': {
       return {
-        ...currentState,
-        pings: [],
+        nextState: {
+          ...currentState,
+          pings: [],
+        },
+        patch: {
+          type: 'ping.cleared',
+          payload: {},
+        },
       }
     }
     case 'setFogEnabled': {
+      const enabled = Boolean(payload?.enabled)
       return {
-        ...currentState,
-        fog: {
-          ...(currentState.fog ?? {}),
-          enabled: Boolean(payload?.enabled),
+        nextState: {
+          ...currentState,
+          fog: {
+            ...(currentState.fog ?? {}),
+            enabled,
+          },
+        },
+        patch: {
+          type: 'fog.enabled',
+          payload: { enabled },
         },
       }
     }
     case 'mergeFogExplored': {
-      const incoming = Array.isArray(payload?.exploredCells) ? payload.exploredCells : []
+      const incoming = Array.isArray(payload?.delta)
+        ? payload.delta
+        : (Array.isArray(payload?.exploredCells) ? payload.exploredCells : [])
       const tokenId = typeof payload?.tokenId === 'string' ? payload.tokenId : ''
       const nextGridSize = Number(payload?.gridSize) || 4
       const currentGridSize = Number(currentState.fog?.gridSize) || nextGridSize
@@ -377,35 +499,69 @@ function applyMutation(currentState, op, payload) {
       const exploredByToken = gridSizeChanged
         ? {}
         : { ...(currentState.fog?.exploredByToken ?? {}) }
+
+      let tokenDelta = incoming
       if (tokenId) {
-        exploredByToken[tokenId] = mergeExploredCells(exploredByToken[tokenId], incoming)
+        const mergedToken = mergeExploredCellsDelta(exploredByToken[tokenId], incoming)
+        exploredByToken[tokenId] = mergedToken.merged
+        tokenDelta = mergedToken.delta
       }
-      const mergedGlobal = mergeExploredCells(gridSizeChanged ? [] : currentState.fog?.exploredCells, incoming)
+
+      const mergedGlobal = mergeExploredCellsDelta(
+        gridSizeChanged ? [] : currentState.fog?.exploredCells,
+        tokenDelta,
+      )
+
       return {
-        ...currentState,
-        fog: {
-          ...(currentState.fog ?? {}),
-          cols: Number(payload?.cols) || currentState.fog?.cols || 0,
-          rows: Number(payload?.rows) || currentState.fog?.rows || 0,
-          gridSize: nextGridSize,
-          exploredCells: mergedGlobal,
-          exploredByToken,
+        nextState: {
+          ...currentState,
+          fog: {
+            ...(currentState.fog ?? {}),
+            cols: Number(payload?.cols) || currentState.fog?.cols || 0,
+            rows: Number(payload?.rows) || currentState.fog?.rows || 0,
+            gridSize: nextGridSize,
+            exploredCells: mergedGlobal.merged,
+            exploredByToken,
+          },
+        },
+        patch: {
+          type: 'fog.merged',
+          payload: {
+            tokenId,
+            delta: mergedGlobal.delta,
+            cols: Number(payload?.cols) || currentState.fog?.cols || 0,
+            rows: Number(payload?.rows) || currentState.fog?.rows || 0,
+            gridSize: nextGridSize,
+          },
         },
       }
     }
     case 'resetFogExplored': {
       return {
-        ...currentState,
-        fog: {
-          ...(currentState.fog ?? {}),
-          exploredCells: [],
-          exploredByToken: {},
+        nextState: {
+          ...currentState,
+          fog: {
+            ...(currentState.fog ?? {}),
+            exploredCells: [],
+            exploredByToken: {},
+          },
+        },
+        patch: {
+          type: 'fog.reset',
+          payload: {},
         },
       }
     }
     case 'resetMapState': {
-      return {
+      const nextState = {
         ...createDefaultVttState(),
+      }
+      return {
+        nextState,
+        patch: {
+          type: 'state.replace',
+          payload: { state: nextState },
+        },
       }
     }
     default:
@@ -451,15 +607,20 @@ export async function POST(request) {
       },
     }))
 
+    const patch = {
+      type: 'map.calibrated',
+      payload: { calibration: updatedMap?.calibration },
+    }
+
     await emitVttEvent('map.updated', {
       mapId,
       version: null,
       timestamp: new Date().toISOString(),
       actorId,
-      patch: { type: op, payload: updatedMap?.calibration },
+      patch,
     })
 
-    return Response.json({ ok: true, map: updatedMap })
+    return Response.json({ ok: true, version: null, patch, map: updatedMap })
   }
 
   if (op === 'setCharacter') {
@@ -473,15 +634,20 @@ export async function POST(request) {
       darkvision: Boolean(payload.darkvision),
     })
 
+    const patch = {
+      type: 'character.updated',
+      payload: { character },
+    }
+
     await emitVttEvent('character.updated', {
       mapId,
       version: null,
       timestamp: new Date().toISOString(),
       actorId,
-      patch: { type: op, payload: character },
+      patch,
     })
 
-    return Response.json({ ok: true, character })
+    return Response.json({ ok: true, version: null, patch, character })
   }
 
   const current = await getOrCreateState(mapId)
@@ -492,21 +658,21 @@ export async function POST(request) {
     }
   }
 
-  const candidate = applyMutation(current, op, payload)
+  const result = applyMutation(current, op, payload)
 
-  if (!candidate) {
+  if (!result) {
     return Response.json({ error: `Invalid payload for op: ${op}` }, { status: 400 })
   }
 
-  const state = await mutateVttState(mapId, () => candidate)
+  const state = await mutateVttState(mapId, () => result.nextState)
 
-  await emitVttEvent(eventForOp(op), {
+  await emitVttEvent(eventForPatchType(result.patch.type), {
     mapId,
     version: state.version,
     timestamp: state.updatedAt,
     actorId,
-    patch: { type: op, payload },
+    patch: result.patch,
   })
 
-  return Response.json({ ok: true, state })
+  return Response.json({ ok: true, version: state.version, patch: result.patch })
 }
