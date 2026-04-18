@@ -234,8 +234,41 @@ function getCircleGeometry(shape) {
 
 function formatDistanceLabel(pxDistance, feetPerPx) {
   if (!Number.isFinite(pxDistance)) return ''
-  if (feetPerPx) return `${formatFeet(pxDistance * feetPerPx)} ft`
+  if (feetPerPx) return `${Math.round(pxDistance * feetPerPx)} ft`
   return `${Math.round(pxDistance)} px`
+}
+
+function rotatePointAroundCenter(point, center, angleDeg) {
+  const radians = (angleDeg * Math.PI) / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const dx = point.x - center.x
+  const dy = point.y - center.y
+  return {
+    x: center.x + dx * cos - dy * sin,
+    y: center.y + dx * sin + dy * cos,
+  }
+}
+
+function rotateShapePayload(shape, deltaDeg) {
+  if (!shape || !shape.shapeType || !Number.isFinite(deltaDeg)) return null
+
+  if (shape.shapeType === 'circle') {
+    const { center, radius } = getCircleGeometry(shape)
+    const pointer = rotatePointAroundCenter({ x: center.x + radius, y: center.y }, center, deltaDeg)
+    return {
+      center,
+      radius,
+      points: [center, pointer],
+    }
+  }
+
+  const points = shape.points ?? []
+  if (!points.length) return null
+  const center = getPointsCenter(points)
+  return {
+    points: points.map((point) => rotatePointAroundCenter(point, center, deltaDeg)),
+  }
 }
 
 function getShapeScaleHandle(shape) {
@@ -248,6 +281,9 @@ function getShapeScaleHandle(shape) {
   if (!points.length) return null
   if (shape.shapeType === 'triangle') {
     return points.reduce((maxPoint, point) => (point.x > maxPoint.x ? point : maxPoint), points[0])
+  }
+  if (shape.shapeType === 'rectangle' || shape.shapeType === 'square') {
+    return points[2] ?? points[points.length - 1]
   }
   const bounds = getBounds(points)
   if (!bounds) return null
@@ -328,34 +364,42 @@ function shapeMeasurements(shape, feetPerPx) {
   }
 
   if (shape.shapeType === 'rectangle' || shape.shapeType === 'square') {
-    const bounds = getBounds(shape.points ?? [])
-    if (!bounds) return []
-    const width = bounds.maxX - bounds.minX
-    const height = bounds.maxY - bounds.minY
+    const points = shape.points ?? []
+    if (points.length < 4) return []
+    const width = distancePx(points[0], points[1])
+    const height = distancePx(points[1], points[2])
+    const widthMid = {
+      x: (points[0].x + points[1].x) / 2,
+      y: (points[0].y + points[1].y) / 2,
+    }
+    const heightMid = {
+      x: (points[1].x + points[2].x) / 2,
+      y: (points[1].y + points[2].y) / 2,
+    }
     const labels = [
       {
         id: `${shape.id}:w-line`,
-        line: [bounds.minX, bounds.minY - 8, bounds.maxX, bounds.minY - 8],
+        line: [points[0].x, points[0].y, points[1].x, points[1].y],
         text: formatDistanceLabel(width, feetPerPx),
-        textX: (bounds.minX + bounds.maxX) / 2 - 24,
-        textY: bounds.minY - 24,
+        textX: widthMid.x + 6,
+        textY: widthMid.y - 16,
       },
     ]
     if (shape.shapeType === 'rectangle') {
       labels.push({
         id: `${shape.id}:h-line`,
-        line: [bounds.maxX + 8, bounds.minY, bounds.maxX + 8, bounds.maxY],
+        line: [points[1].x, points[1].y, points[2].x, points[2].y],
         text: formatDistanceLabel(height, feetPerPx),
-        textX: bounds.maxX + 14,
-        textY: (bounds.minY + bounds.maxY) / 2 - 8,
+        textX: heightMid.x + 6,
+        textY: heightMid.y - 16,
       })
     } else {
       labels.push({
         id: `${shape.id}:s-line`,
-        line: [bounds.maxX + 8, bounds.minY, bounds.maxX + 8, bounds.maxY],
+        line: [points[1].x, points[1].y, points[2].x, points[2].y],
         text: `h ${formatDistanceLabel(height, feetPerPx)}`,
-        textX: bounds.maxX + 14,
-        textY: (bounds.minY + bounds.maxY) / 2 - 8,
+        textX: heightMid.x + 6,
+        textY: heightMid.y - 16,
       })
     }
     return labels
@@ -364,21 +408,30 @@ function shapeMeasurements(shape, feetPerPx) {
   if (shape.shapeType === 'triangle') {
     const points = shape.points ?? []
     if (points.length < 3) return []
-    const top = points.reduce((minPoint, point) => (point.y < minPoint.y ? point : minPoint), points[0])
-    const basePoints = [...points].sort((a, b) => b.y - a.y).slice(0, 2).sort((a, b) => a.x - b.x)
-    if (basePoints.length < 2) return []
-    const baseMid = {
-      x: (basePoints[0].x + basePoints[1].x) / 2,
-      y: (basePoints[0].y + basePoints[1].y) / 2,
+    const apex = points[0]
+    const baseA = points[1]
+    const baseB = points[2]
+    const baseDx = baseB.x - baseA.x
+    const baseDy = baseB.y - baseA.y
+    const denom = (baseDx * baseDx) + (baseDy * baseDy)
+    if (!denom) return []
+    const projectionT = clamp(
+      (((apex.x - baseA.x) * baseDx) + ((apex.y - baseA.y) * baseDy)) / denom,
+      0,
+      1,
+    )
+    const foot = {
+      x: baseA.x + (baseDx * projectionT),
+      y: baseA.y + (baseDy * projectionT),
     }
-    const height = distancePx(top, baseMid)
+    const height = distancePx(apex, foot)
     return [
       {
         id: `${shape.id}:tri-h`,
-        line: [top.x, top.y, baseMid.x, baseMid.y],
+        line: [apex.x, apex.y, foot.x, foot.y],
         text: `h ${formatDistanceLabel(height, feetPerPx)}`,
-        textX: (top.x + baseMid.x) / 2 + 8,
-        textY: (top.y + baseMid.y) / 2 - 8,
+        textX: (apex.x + foot.x) / 2 + 8,
+        textY: (apex.y + foot.y) / 2 - 8,
       },
     ]
   }
@@ -1296,6 +1349,21 @@ export default function VttClient() {
     }
   }, [callMutation])
 
+  const rotateSelectedShape = useCallback(async (deltaDegrees) => {
+    if (!selectedShapeId || !selectedShape?.shapeType) return
+    const payload = rotateShapePayload(selectedShape, deltaDegrees)
+    if (!payload) return
+
+    try {
+      await callMutation('updateShape', {
+        id: selectedShapeId,
+        ...payload,
+      })
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, selectedShape, selectedShapeId])
+
   const removeShape = useCallback(async () => {
     if (!selectedShapeId) return
 
@@ -1901,78 +1969,88 @@ export default function VttClient() {
                   />
                 ))}
               </div>
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Shape Creation</div>
-                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.2rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={showDarknessZones}
-                    onChange={(event) => setShowDarknessZones(event.target.checked)}
-                  />
-                  Show darkness zones
-                </label>
-                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={showBarriers}
-                    onChange={(event) => setShowBarriers(event.target.checked)}
-                  />
-                  Show barriers
-                </label>
-                <div style={{ marginBottom: '0.35rem' }}>
-                  <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
-                  <div style={toolGridStyle}>
-                    {SHAPE_TYPE_OPTIONS.map((shapeType) => (
-                      <IconTileButton
-                        key={shapeType.id}
-                        icon={shapeType.id === 'circle' ? '⚪' : shapeType.id === 'square' ? '⬜' : shapeType.id === 'triangle' ? '🔺' : '▭'}
-                        label={shapeType.label}
-                        onClick={() => setShapeDraftType(shapeType.id)}
-                        active={shapeDraftType === shapeType.id}
-                        size="small"
+              {tool === 'shape' && (
+                <>
+                  <div style={subSectionStyle}>
+                    <div style={subSectionTitleStyle}>Shape Creation</div>
+                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.2rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={showDarknessZones}
+                        onChange={(event) => setShowDarknessZones(event.target.checked)}
                       />
-                    ))}
+                      Show darkness zones
+                    </label>
+                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={showBarriers}
+                        onChange={(event) => setShowBarriers(event.target.checked)}
+                      />
+                      Show barriers
+                    </label>
+                    <div style={{ marginBottom: '0.35rem' }}>
+                      <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
+                      <div style={toolGridStyle}>
+                        {SHAPE_TYPE_OPTIONS.map((shapeType) => (
+                          <IconTileButton
+                            key={shapeType.id}
+                            icon={shapeType.id === 'circle' ? '⚪' : shapeType.id === 'square' ? '⬜' : shapeType.id === 'triangle' ? '🔺' : '▭'}
+                            label={shapeType.label}
+                            onClick={() => setShapeDraftType(shapeType.id)}
+                            active={shapeDraftType === shapeType.id}
+                            size="small"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <label style={{ ...labelStyle, marginBottom: 0 }}>
+                      New shape color
+                      <select value={shapeDraftColor} onChange={(event) => setShapeDraftColor(event.target.value)} style={inputStyle}>
+                        {SHAPE_COLOR_OPTIONS.map((entry) => (
+                          <option key={entry.id} value={entry.id}>{entry.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
+                      Select Shape Tool, then click the map to place.
+                    </p>
                   </div>
-                </div>
-                <label style={{ ...labelStyle, marginBottom: 0 }}>
-                  New shape color
-                  <select value={shapeDraftColor} onChange={(event) => setShapeDraftColor(event.target.value)} style={inputStyle}>
-                    {SHAPE_COLOR_OPTIONS.map((entry) => (
-                      <option key={entry.id} value={entry.id}>{entry.label}</option>
+                  <select value={selectedShapeId} onChange={(event) => setSelectedShapeId(event.target.value)} style={{ ...inputStyle, marginTop: '0.45rem' }}>
+                    <option value="">Select shape</option>
+                    {(activeState?.shapes ?? []).map((shape) => (
+                      <option key={shape.id} value={shape.id}>
+                        {(shape.shapeType || shape.kind)} ({shape.id.slice(0, 6)})
+                      </option>
                     ))}
                   </select>
-                </label>
-                <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                  Select Shape Tool, then click the map to place.
-                </p>
-              </div>
-              <select value={selectedShapeId} onChange={(event) => setSelectedShapeId(event.target.value)} style={{ ...inputStyle, marginTop: '0.45rem' }}>
-                <option value="">Select shape</option>
-                {(activeState?.shapes ?? []).map((shape) => (
-                  <option key={shape.id} value={shape.id}>
-                    {(shape.shapeType || shape.kind)} ({shape.id.slice(0, 6)})
-                  </option>
-                ))}
-              </select>
-              {selectedShape && (
-                <>
-                  {selectedShape.shapeType && (
-                    <select
-                      value={selectedShapeColor}
-                      onChange={(event) => {
-                        setSelectedShapeColor(event.target.value)
-                        updateShapeColor(selectedShape.id, event.target.value)
-                      }}
-                      style={{ ...inputStyle, marginTop: '0.4rem' }}
-                    >
-                      {SHAPE_COLOR_OPTIONS.map((entry) => (
-                        <option key={entry.id} value={entry.id}>{entry.label}</option>
-                      ))}
-                    </select>
+                  {selectedShape && (
+                    <>
+                      {selectedShape.shapeType && (
+                        <>
+                          <select
+                            value={selectedShapeColor}
+                            onChange={(event) => {
+                              setSelectedShapeColor(event.target.value)
+                              updateShapeColor(selectedShape.id, event.target.value)
+                            }}
+                            style={{ ...inputStyle, marginTop: '0.4rem' }}
+                          >
+                            {SHAPE_COLOR_OPTIONS.map((entry) => (
+                              <option key={entry.id} value={entry.id}>{entry.label}</option>
+                            ))}
+                          </select>
+                          <div style={{ ...iconTileGridStyle, marginTop: '0.4rem' }}>
+                            <IconTileButton icon="↺" label="Rotate -15°" onClick={() => rotateSelectedShape(-15)} tone="muted" size="small" />
+                            <IconTileButton icon="↻" label="Rotate +15°" onClick={() => rotateSelectedShape(15)} tone="muted" size="small" />
+                          </div>
+                        </>
+                      )}
+                      <div style={{ marginTop: '0.4rem' }}>
+                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
+                      </div>
+                    </>
                   )}
-                  <div style={{ marginTop: '0.4rem' }}>
-                    <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
-                  </div>
                 </>
               )}
             </div>
@@ -2169,9 +2247,9 @@ export default function VttClient() {
           <>
           <div style={{ marginBottom: '0.45rem' }}>
             <div style={iconTileGridStyle}>
-              <IconTileButton icon="➖" label="Zoom Out" onClick={zoomOut} tone="primary" size="small" />
-              <IconTileButton icon="➕" label="Zoom In" onClick={zoomIn} tone="primary" size="small" />
-              <IconTileButton icon="🔁" label="Reset Zoom" onClick={resetZoom} tone="muted" size="small" />
+              <IconTileButton icon="➖" label="Zoom Out" onClick={zoomOut} tone="primary" size="xsmall" />
+              <IconTileButton icon="➕" label="Zoom In" onClick={zoomIn} tone="primary" size="xsmall" />
+              <IconTileButton icon="🔁" label="Reset Zoom" onClick={resetZoom} tone="muted" size="xsmall" />
             </div>
             <span style={{ color: '#8f8f8f', fontSize: '0.76rem' }}>{Math.round(mapZoom * 100)}%</span>
           </div>
@@ -2592,8 +2670,8 @@ function IconTileButton({
       onClick={onClick}
       style={iconTileButtonStyle({ active, disabled, tone, size, fullWidth })}
     >
-      <span style={iconTileIconStyle}>{icon}</span>
-      <span style={iconTileLabelStyle}>{label}</span>
+      <span style={iconTileIconStyle(size)}>{icon}</span>
+      <span style={iconTileLabelStyle(size)}>{label}</span>
     </button>
   )
 }
@@ -2642,25 +2720,28 @@ function iconTileButtonStyle({ active, disabled, tone, size, fullWidth }) {
     },
   }
   const palette = tones[tone] ?? tones.neutral
+  const isXSmall = size === 'xsmall'
   const isSmall = size === 'small'
   const isLarge = size === 'large'
 
   return {
     width: '100%',
-    minHeight: fullWidth ? (isLarge ? '88px' : '74px') : (isSmall ? '72px' : isLarge ? '102px' : '86px'),
+    minHeight: fullWidth
+      ? (isLarge ? '88px' : isXSmall ? '46px' : '74px')
+      : (isXSmall ? '42px' : isSmall ? '72px' : isLarge ? '102px' : '86px'),
     aspectRatio: fullWidth ? 'auto' : '1 / 1',
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: isSmall ? '0.24rem' : '0.32rem',
-    borderRadius: isSmall ? '14px' : '16px',
+    gap: isXSmall ? '0.08rem' : isSmall ? '0.24rem' : '0.32rem',
+    borderRadius: isXSmall ? '11px' : isSmall ? '14px' : '16px',
     border: `1px solid ${active ? palette.activeBorder : palette.border}`,
     background: active ? palette.activeBg : palette.bg,
     color: active ? palette.activeText : palette.text,
     opacity: disabled ? 0.48 : 1,
     cursor: disabled ? 'not-allowed' : 'pointer',
-    padding: isSmall ? '0.34rem 0.3rem' : '0.48rem 0.42rem',
+    padding: isXSmall ? '0.2rem 0.2rem' : isSmall ? '0.34rem 0.3rem' : '0.48rem 0.42rem',
     lineHeight: 1.12,
     textAlign: 'center',
     transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease',
@@ -2727,15 +2808,32 @@ const subSectionTitleStyle = {
   color: '#8f8f8f',
 }
 
-const iconTileIconStyle = {
-  fontSize: '1.06rem',
-  lineHeight: 1,
+function iconTileIconStyle(size = 'normal') {
+  if (size === 'xsmall') {
+    return {
+      fontSize: '0.86rem',
+      lineHeight: 1,
+    }
+  }
+  return {
+    fontSize: '1.06rem',
+    lineHeight: 1,
+  }
 }
 
-const iconTileLabelStyle = {
-  fontSize: '0.67rem',
-  fontWeight: 600,
-  color: 'inherit',
+function iconTileLabelStyle(size = 'normal') {
+  if (size === 'xsmall') {
+    return {
+      fontSize: '0.54rem',
+      fontWeight: 600,
+      color: 'inherit',
+    }
+  }
+  return {
+    fontSize: '0.67rem',
+    fontWeight: 600,
+    color: 'inherit',
+  }
 }
 
 const iconTileGridStyle = {
