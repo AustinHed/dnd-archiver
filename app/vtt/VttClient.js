@@ -1856,10 +1856,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const toggleDmPanel = useCallback((panelId) => {
     setActiveDmPanel((prev) => (prev === panelId ? '' : panelId))
     setActivePrimaryPanel('')
-    if (panelId === 'addNpc' && nextNpcStagingPoint) {
-      placeNpcToken(nextNpcStagingPoint)
-    }
-  }, [nextNpcStagingPoint, placeNpcToken])
+  }, [])
 
   const selectTool = useCallback((toolId) => {
     if (!isDm && (MAP_SETUP_TOOL_IDS.includes(toolId) || DM_TOOL_IDS.includes(toolId) || toolId === 'token' || toolId === 'npcToken')) {
@@ -3379,7 +3376,8 @@ function iconTileButtonStyle({ active, disabled, tone, size, fullWidth }) {
     minHeight: fullWidth
       ? (isLarge ? '46px' : isXSmall ? '24px' : '38px')
       : (isXSmall ? '22px' : isSmall ? '36px' : isLarge ? '52px' : '44px'),
-    aspectRatio: fullWidth ? 'auto' : '1 / 1',
+    // Keep primary tiles square, but make nested/small controls compact rectangles.
+    aspectRatio: fullWidth ? 'auto' : (isXSmall || isSmall ? 'auto' : '1 / 1'),
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'center',
