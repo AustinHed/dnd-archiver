@@ -71,6 +71,7 @@ const SHAPE_COLOR_OPTIONS = [
   { id: 'green', label: 'Green', stroke: '#4caf50' },
   { id: 'white', label: 'White', stroke: '#f4f4f4' },
   { id: 'black', label: 'Black', stroke: '#111111' },
+  { id: 'darkness', label: 'Darkness Zone', stroke: '#1f2430' },
 ]
 
 const SNAP_THRESHOLD_PX = 14
@@ -160,7 +161,7 @@ function shapeStrokeFromColorId(colorId = 'blue') {
 
 function shapeFillFromColorId(colorId = 'blue') {
   const stroke = shapeStrokeFromColorId(colorId)
-  const alpha = colorId === 'black' ? 0.22 : 0.2
+  const alpha = colorId === 'black' ? 0.22 : colorId === 'darkness' ? 0.45 : 0.2
   return rgbaFromHex(stroke, alpha)
 }
 
@@ -175,6 +176,7 @@ function createMapShapePayload(shapeType, x, y, colorId) {
   const colorName = colorId || 'blue'
   const color = shapeStrokeFromColorId(colorName)
   const fill = shapeFillFromColorId(colorName)
+  const kind = colorName === 'darkness' ? 'darkness' : shapeType
 
   if (shapeType === 'circle') {
     const radius = 56
@@ -182,7 +184,7 @@ function createMapShapePayload(shapeType, x, y, colorId) {
     return {
       points: [center, { x: x + radius, y }],
       closed: true,
-      kind: 'circle',
+      kind,
       shapeType: 'circle',
       center,
       radius,
@@ -196,7 +198,7 @@ function createMapShapePayload(shapeType, x, y, colorId) {
     return {
       points: buildTrianglePoints(x, y),
       closed: true,
-      kind: 'triangle',
+      kind,
       shapeType: 'triangle',
       colorName,
       color,
@@ -208,7 +210,7 @@ function createMapShapePayload(shapeType, x, y, colorId) {
     return {
       points: buildSquarePoints(x, y),
       closed: true,
-      kind: 'square',
+      kind,
       shapeType: 'square',
       colorName,
       color,
@@ -219,7 +221,7 @@ function createMapShapePayload(shapeType, x, y, colorId) {
   return {
     points: buildRectanglePoints(x, y),
     closed: true,
-    kind: 'rectangle',
+    kind,
     shapeType: 'rectangle',
     colorName,
     color,
@@ -323,26 +325,62 @@ function scaleShapePayload(shape, targetPoint) {
   }
 
   const center = getPointsCenter(shape.points ?? [])
+  const points = shape.points ?? []
+  const axisU = points[0] && points[1]
+    ? (() => {
+        const dx = points[1].x - points[0].x
+        const dy = points[1].y - points[0].y
+        const len = Math.hypot(dx, dy) || 1
+        return { x: dx / len, y: dy / len }
+      })()
+    : { x: 1, y: 0 }
+  const axisV = points[1] && points[2]
+    ? (() => {
+        const dx = points[2].x - points[1].x
+        const dy = points[2].y - points[1].y
+        const len = Math.hypot(dx, dy) || 1
+        return { x: dx / len, y: dy / len }
+      })()
+    : { x: -axisU.y, y: axisU.x }
+  const targetVec = { x: targetPoint.x - center.x, y: targetPoint.y - center.y }
+  const projU = Math.abs((targetVec.x * axisU.x) + (targetVec.y * axisU.y))
+  const projV = Math.abs((targetVec.x * axisV.x) + (targetVec.y * axisV.y))
 
   if (shape.shapeType === 'rectangle') {
-    const width = clamp(Math.abs(targetPoint.x - center.x) * 2, 20, 3000)
-    const height = clamp(Math.abs(targetPoint.y - center.y) * 2, 20, 3000)
+    const halfW = clamp(projU, 10, 1500)
+    const halfH = clamp(projV, 10, 1500)
     return {
-      points: buildRectanglePoints(center.x, center.y, width, height),
+      points: [
+        { x: center.x - axisU.x * halfW - axisV.x * halfH, y: center.y - axisU.y * halfW - axisV.y * halfH },
+        { x: center.x + axisU.x * halfW - axisV.x * halfH, y: center.y + axisU.y * halfW - axisV.y * halfH },
+        { x: center.x + axisU.x * halfW + axisV.x * halfH, y: center.y + axisU.y * halfW + axisV.y * halfH },
+        { x: center.x - axisU.x * halfW + axisV.x * halfH, y: center.y - axisU.y * halfW + axisV.y * halfH },
+      ],
     }
   }
 
   if (shape.shapeType === 'square') {
-    const side = clamp(Math.max(Math.abs(targetPoint.x - center.x), Math.abs(targetPoint.y - center.y)) * 2, 20, 3000)
+    const half = clamp(Math.max(projU, projV), 10, 1500)
     return {
-      points: buildSquarePoints(center.x, center.y, side),
+      points: [
+        { x: center.x - axisU.x * half - axisV.x * half, y: center.y - axisU.y * half - axisV.y * half },
+        { x: center.x + axisU.x * half - axisV.x * half, y: center.y + axisU.y * half - axisV.y * half },
+        { x: center.x + axisU.x * half + axisV.x * half, y: center.y + axisU.y * half + axisV.y * half },
+        { x: center.x - axisU.x * half + axisV.x * half, y: center.y - axisU.y * half + axisV.y * half },
+      ],
     }
   }
 
   if (shape.shapeType === 'triangle') {
-    const side = clamp(Math.max(Math.abs(targetPoint.x - center.x), Math.abs(targetPoint.y - center.y)) * 2, 20, 3000)
+    const handle = getShapeScaleHandle(shape)
+    const currentRadius = handle ? Math.max(1, distancePx(center, handle)) : 1
+    const nextRadius = clamp(distancePx(center, targetPoint), 10, 2000)
+    const ratio = nextRadius / currentRadius
     return {
-      points: buildTrianglePoints(center.x, center.y, side),
+      points: points.map((point) => ({
+        x: center.x + (point.x - center.x) * ratio,
+        y: center.y + (point.y - center.y) * ratio,
+      })),
     }
   }
 
@@ -602,13 +640,11 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [linkResultId, setLinkResultId] = useState('')
   const [pointerPosition, setPointerPosition] = useState(null)
   const [mapZoom, setMapZoom] = useState(1)
-  const [showDarknessZones, setShowDarknessZones] = useState(true)
   const [mapUndoStack, setMapUndoStack] = useState([])
   const [selectedStructure, setSelectedStructure] = useState({ kind: null, ids: [] })
   const [structureDragOffset, setStructureDragOffset] = useState(null)
   const [selectedShapeId, setSelectedShapeId] = useState('')
   const [shapeDraftType, setShapeDraftType] = useState('rectangle')
-  const [shapeDraftColor, setShapeDraftColor] = useState('blue')
   const [selectedShapeColor, setSelectedShapeColor] = useState('blue')
   const [selectedTokenId, setSelectedTokenId] = useState('')
   const [focusedPlayerTokenId, setFocusedPlayerTokenId] = useState(isDm ? 'dm' : '')
@@ -1425,7 +1461,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     if (tool === 'shape') {
       try {
-        const payload = createMapShapePayload(shapeDraftType, pointer.x, pointer.y, shapeDraftColor)
+        const payload = createMapShapePayload(shapeDraftType, pointer.x, pointer.y, 'blue')
         const data = await callMutation('addShape', payload)
         const created = data?.state?.shapes?.[data.state.shapes.length - 1]
         if (created?.id) {
@@ -1435,7 +1471,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         setError(err.message)
       }
     }
-  }, [activeMap, callMutation, commitDraftPoints, draftPoints, isDm, isPlayer, mapZoom, placeNpcToken, placeToken, selectedToken, sessionStatus, shapeDraftColor, shapeDraftType, tool])
+  }, [activeMap, callMutation, commitDraftPoints, draftPoints, isDm, isPlayer, mapZoom, placeNpcToken, placeToken, selectedToken, sessionStatus, shapeDraftType, tool])
 
   const onStagePointerDown = useCallback((event) => {
     if (tool !== 'measure' || !activeMap || (isPlayer && sessionStatus !== 'active')) return
@@ -1491,10 +1527,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }
   }, [callMutation, isPlayer, pathPoints, selectedToken])
 
-  const updateShapeColor = useCallback(async (shapeId, colorName) => {
+  const updateShapeColor = useCallback(async (shape, colorName) => {
+    if (!shape?.id) return
+    const nextKind = colorName === 'darkness'
+      ? 'darkness'
+      : (shape.shapeType || shape.kind || 'shape')
     try {
       await callMutation('updateShape', {
-        id: shapeId,
+        id: shape.id,
+        kind: nextKind,
         colorName,
         color: shapeStrokeFromColorId(colorName),
         fill: shapeFillFromColorId(colorName),
@@ -1844,13 +1885,12 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   }, [selectedShape, shapePreview])
 
   const shapeMeasurementEntries = useMemo(() => {
-    return (activeState?.shapes ?? []).flatMap((shape) => {
-      const effectiveShape = shapePreview?.shapeId === shape.id
-        ? { ...shape, ...shapePreview.payload }
-        : shape
-      return shapeMeasurements(effectiveShape, feetPerPx)
-    })
-  }, [activeState?.shapes, feetPerPx, shapePreview])
+    if (!selectedShape) return []
+    const effectiveShape = shapePreview?.shapeId === selectedShape.id
+      ? { ...selectedShape, ...shapePreview.payload }
+      : selectedShape
+    return shapeMeasurements(effectiveShape, feetPerPx)
+  }, [feetPerPx, selectedShape, shapePreview])
 
   const pathDraftLabel = useMemo(() => {
     if (pathPoints.length < 2) return null
@@ -2210,14 +2250,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 <>
                   <div style={subSectionStyle}>
                     <div style={subSectionTitleStyle}>Shape Creation</div>
-                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.2rem' }}>
-                      <input
-                        type="checkbox"
-                        checked={showDarknessZones}
-                        onChange={(event) => setShowDarknessZones(event.target.checked)}
-                      />
-                      Show darkness zones
-                    </label>
                     <div style={{ marginBottom: '0.35rem' }}>
                       <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
                       <div style={toolGridStyle}>
@@ -2233,16 +2265,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                         ))}
                       </div>
                     </div>
-                    <label style={{ ...labelStyle, marginBottom: 0 }}>
-                      New shape color
-                      <select value={shapeDraftColor} onChange={(event) => setShapeDraftColor(event.target.value)} style={inputStyle}>
-                        {SHAPE_COLOR_OPTIONS.map((entry) => (
-                          <option key={entry.id} value={entry.id}>{entry.label}</option>
-                        ))}
-                      </select>
-                    </label>
                     <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                      Select Shape Tool, then click the map to place.
+                      Select Shape Tool, then click the map to place. New shapes default to blue.
                     </p>
                   </div>
                   <select value={selectedShapeId} onChange={(event) => setSelectedShapeId(event.target.value)} style={{ ...inputStyle, marginTop: '0.45rem' }}>
@@ -2261,7 +2285,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                             value={selectedShapeColor}
                             onChange={(event) => {
                               setSelectedShapeColor(event.target.value)
-                              updateShapeColor(selectedShape.id, event.target.value)
+                              updateShapeColor(selectedShape, event.target.value)
                             }}
                             style={{ ...inputStyle, marginTop: '0.4rem' }}
                           >
@@ -2535,7 +2559,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 })()
               ))}
 
-              {showDarknessZones && (activeState?.darknessZones ?? []).map((zone) => (
+              {(activeState?.darknessZones ?? []).map((zone) => (
                 <Line
                   key={zone.id}
                   points={flattenPoints(zone.points)}
@@ -2552,7 +2576,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               ))}
 
               {(activeState?.shapes ?? []).map((shape) => {
-                if (shape.kind === 'darkness' && !showDarknessZones) return null
                 const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
                 const isBarrierSelected = shape.kind === 'barrier' && selectedBarrierIds.has(shape.id)
                 const barrierOffset = isBarrierSelected && structureDragOffset ? structureDragOffset : { dx: 0, dy: 0 }
@@ -2891,17 +2914,33 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 />
               ))}
 
-              {shapeMeasurementEntries.map((entry) => (
-                <Text
-                  key={`${entry.id}:label`}
-                  x={entry.textX}
-                  y={entry.textY}
-                  text={entry.text}
-                  fontSize={11}
-                  fill="#f0f0f0"
-                  listening={false}
-                />
-              ))}
+              {shapeMeasurementEntries.map((entry) => {
+                const width = Math.max(48, (String(entry.text).length * 7) + 10)
+                return [
+                  <Rect
+                    key={`${entry.id}:label:bg`}
+                    x={entry.textX - 4}
+                    y={entry.textY - 2}
+                    width={width}
+                    height={17}
+                    fill="rgba(8,8,10,0.82)"
+                    stroke="rgba(245,245,245,0.22)"
+                    strokeWidth={1}
+                    cornerRadius={4}
+                    listening={false}
+                  />,
+                  <Text
+                    key={`${entry.id}:label`}
+                    x={entry.textX}
+                    y={entry.textY}
+                    text={entry.text}
+                    fontSize={11}
+                    fontStyle="bold"
+                    fill="#f5f7ff"
+                    listening={false}
+                  />,
+                ]
+              })}
 
               {measurementDistance && (
                 <>
