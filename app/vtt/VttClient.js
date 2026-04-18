@@ -1962,7 +1962,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         exploredFill: 'rgba(0,0,0,0.24)',
         unseenBlur: 12,
         exploredBlur: 10,
-        cornerRadius: Math.max(5, gridSize * 0.45),
       }
     }
 
@@ -1972,7 +1971,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       exploredFill: 'rgba(0,0,0,0.38)',
       unseenBlur: 74,
       exploredBlur: 26,
-      cornerRadius: Math.max(5, gridSize * 0.45),
     }
   }, [activeState?.fog, isDm, viewMode, visibility, visionToken?.id])
 
@@ -3243,7 +3241,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       y={rect.y}
                       width={rect.width}
                       height={rect.height}
-                      cornerRadius={fogRenderData.cornerRadius || 0}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
                       shadowColor={rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.95)'}
                       shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
