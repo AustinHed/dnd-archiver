@@ -23,6 +23,20 @@ const TOOL_OPTIONS = {
   npcToken: { id: 'npcToken', label: 'Add NPC Token' },
 }
 
+const TOOL_ICONS = {
+  move: '🧭',
+  path: '👣',
+  wall: '🧱',
+  darkness: '🌑',
+  barrier: '🚧',
+  shape: '🔷',
+  measure: '📏',
+  ping: '📡',
+  calibrate: '🎯',
+  token: '🧙',
+  npcToken: '👤',
+}
+
 const MAP_SETUP_TOOL_IDS = ['wall', 'barrier', 'calibrate']
 const DM_TOOL_IDS = ['darkness', 'npcToken']
 const GENERAL_TOOL_IDS = ['measure', 'shape', 'ping']
@@ -417,6 +431,15 @@ function interpolatePointAlongPath(points, progress) {
   return points.at(-1)
 }
 
+function getMapPointerFromEvent(event, zoom = 1) {
+  const pointer = event.target.getStage()?.getPointerPosition()
+  if (!pointer) return null
+  return {
+    x: pointer.x / zoom,
+    y: pointer.y / zoom,
+  }
+}
+
 function getClientId() {
   if (typeof window === 'undefined') return 'server'
 
@@ -444,6 +467,9 @@ export default function VttClient() {
   const [startMapId, setStartMapId] = useState('')
   const [linkResultId, setLinkResultId] = useState('')
   const [pointerPosition, setPointerPosition] = useState(null)
+  const [mapZoom, setMapZoom] = useState(1)
+  const [showDarknessZones, setShowDarknessZones] = useState(true)
+  const [showBarriers, setShowBarriers] = useState(true)
   const [mapUndoStack, setMapUndoStack] = useState([])
   const [selectedWallId, setSelectedWallId] = useState('')
   const [selectedShapeId, setSelectedShapeId] = useState('')
@@ -463,6 +489,7 @@ export default function VttClient() {
   const [mapRenderError, setMapRenderError] = useState('')
   const [pingClock, setPingClock] = useState(Date.now())
   const [shapePreview, setShapePreview] = useState(null)
+  const [lastKnownNpcByViewer, setLastKnownNpcByViewer] = useState({})
   const [expandedMenus, setExpandedMenus] = useState({
     mapSetup: true,
     dungeonMaster: true,
@@ -603,6 +630,8 @@ export default function VttClient() {
     setSelectedWallId('')
     setSelectedShapeId('')
     setMapUndoStack([])
+    setMapZoom(1)
+    setLastKnownNpcByViewer({})
   }, [bundle?.activeMap?.id])
 
   useEffect(() => {
@@ -1101,7 +1130,7 @@ export default function VttClient() {
 
   const onStageClick = useCallback(async (event) => {
     if (!activeMap || !bundle?.live?.active) return
-    const pointer = event.target.getStage()?.getPointerPosition()
+    const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
 
     if (tool === 'wall' || tool === 'darkness' || tool === 'barrier') {
@@ -1162,17 +1191,17 @@ export default function VttClient() {
         setError(err.message)
       }
     }
-  }, [activeMap, bundle?.live?.active, callMutation, commitDraftPoints, draftPoints, placeNpcToken, placeToken, selectedToken, shapeDraftColor, shapeDraftType, tool])
+  }, [activeMap, bundle?.live?.active, callMutation, commitDraftPoints, draftPoints, mapZoom, placeNpcToken, placeToken, selectedToken, shapeDraftColor, shapeDraftType, tool])
 
   const onStagePointerDown = useCallback((event) => {
     if (tool !== 'measure' || !activeMap || !bundle?.live?.active) return
-    const pointer = event.target.getStage()?.getPointerPosition()
+    const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
     setMeasureDrag({ start: { x: pointer.x, y: pointer.y }, end: { x: pointer.x, y: pointer.y } })
-  }, [activeMap, bundle?.live?.active, tool])
+  }, [activeMap, bundle?.live?.active, mapZoom, tool])
 
   const onStagePointerMove = useCallback((event) => {
-    const pointer = event.target.getStage()?.getPointerPosition()
+    const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
 
     if (tool === 'wall' || tool === 'barrier') {
@@ -1180,7 +1209,7 @@ export default function VttClient() {
     }
 
     setMeasureDrag((prev) => (prev ? { ...prev, end: { x: pointer.x, y: pointer.y } } : prev))
-  }, [tool])
+  }, [mapZoom, tool])
 
   const onStagePointerUp = useCallback(() => {
     if (tool !== 'measure') return
@@ -1303,6 +1332,34 @@ export default function VttClient() {
     }
   }, [callMutation, selectedShape])
 
+  const resetMap = useCallback(async () => {
+    if (!activeMap) return
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm('Reset this map? This clears walls, barriers, shapes, darkness zones, tokens, fog memory, and pings for this map.')
+      if (!confirmed) return
+    }
+
+    try {
+      await callMutation('resetMapState', {})
+      setSelectedWallId('')
+      setSelectedShapeId('')
+      setSelectedTokenId('')
+      setSelectedNpcTokenId('')
+      setMapUndoStack([])
+      setDraftPoints([])
+      setPointerPosition(null)
+      setPathPoints([])
+      setMeasureDrag(null)
+      setCalibrationPoints([])
+      setShapePreview(null)
+      setFocusedPlayerTokenId('dm')
+      setViewMode('dm')
+      setLastKnownNpcByViewer({})
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [activeMap, callMutation])
+
   const undoMapEdit = useCallback(async () => {
     const action = mapUndoStack[0]
     if (!action) return
@@ -1378,6 +1435,18 @@ export default function VttClient() {
     setTool(toolId)
   }, [])
 
+  const zoomIn = useCallback(() => {
+    setMapZoom((prev) => clamp(prev + 0.2, 0.6, 3))
+  }, [])
+
+  const zoomOut = useCallback(() => {
+    setMapZoom((prev) => clamp(prev - 0.2, 0.6, 3))
+  }, [])
+
+  const resetZoom = useCallback(() => {
+    setMapZoom(1)
+  }, [])
+
   const selectPartyCharacter = useCallback((name) => {
     setSelectedPartyCharacter(name)
     if (!name) return
@@ -1435,8 +1504,8 @@ export default function VttClient() {
 
         const seen = exploredSet.has(index)
         const fill = seen
-          ? (viewMode === 'dm' ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.78)')
-          : (viewMode === 'dm' ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.96)')
+          ? (viewMode === 'dm' ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.52)')
+          : (viewMode === 'dm' ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.66)')
 
         rects.push({
           x: col * visibility.gridSize,
@@ -1444,7 +1513,7 @@ export default function VttClient() {
           width: visibility.gridSize,
           height: visibility.gridSize,
           fill,
-          blur: viewMode === 'player' ? (seen ? 8 : 16) : 0,
+          blur: viewMode === 'player' ? (seen ? 0 : 26) : 0,
         })
       }
     }
@@ -1480,6 +1549,42 @@ export default function VttClient() {
     return ids
   }, [activeState?.fog?.enabled, activeState?.tokens, viewMode, visibility, visionToken?.id])
 
+  useEffect(() => {
+    if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return
+    const visibleNpcs = npcTokens.filter((token) => visibleTokenIds.has(token.id))
+    if (!visibleNpcs.length) return
+
+    setLastKnownNpcByViewer((prev) => {
+      const existing = prev[visionToken.id] ?? {}
+      let changed = false
+      const nextViewerState = { ...existing }
+
+      for (const token of visibleNpcs) {
+        const current = existing[token.id]
+        if (!current || current.x !== token.x || current.y !== token.y || current.name !== token.name || current.size !== token.size || current.ringColor !== token.ringColor) {
+          nextViewerState[token.id] = {
+            id: token.id,
+            x: token.x,
+            y: token.y,
+            name: token.name,
+            size: token.size,
+            ringColor: token.ringColor,
+          }
+          changed = true
+        }
+      }
+
+      if (!changed) return prev
+      return { ...prev, [visionToken.id]: nextViewerState }
+    })
+  }, [focusedPlayerTokenId, npcTokens, viewMode, visionToken?.id, visibleTokenIds])
+
+  const ghostNpcTokens = useMemo(() => {
+    if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return []
+    const viewerMemory = lastKnownNpcByViewer[visionToken.id] ?? {}
+    return Object.values(viewerMemory).filter((token) => !visibleTokenIds.has(token.id))
+  }, [focusedPlayerTokenId, lastKnownNpcByViewer, viewMode, visionToken?.id, visibleTokenIds])
+
   const draftSnapPoint = useMemo(() => {
     if ((tool !== 'wall' && tool !== 'barrier') || !pointerPosition || draftPoints.length < 2) return null
     return findSnapPoint(draftPoints, pointerPosition)
@@ -1511,6 +1616,8 @@ export default function VttClient() {
   }
 
   const sessionActive = Boolean(bundle?.live?.active)
+  const zoomedStageWidth = Math.round(stageWidth * mapZoom)
+  const zoomedStageHeight = Math.round(stageHeight * mapZoom)
 
   return (
     <main style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '1rem' }}>
@@ -1553,19 +1660,19 @@ export default function VttClient() {
                   </option>
                 ))}
               </select>
-              <div style={rowButtonStyle}>
-                <button
+              <div style={iconTileGridStyle}>
+                <IconTileButton
+                  icon="▶️"
+                  label="Start Session"
                   onClick={() => startSession(startMapId || activeMap?.id)}
-                  style={buttonStyle('#1a351a', '#2b7a2b')}
-                >
-                  Start Session
-                </button>
-                <button
+                  tone="success"
+                />
+                <IconTileButton
+                  icon="⏹️"
+                  label="Stop Session"
                   onClick={stopSession}
-                  style={buttonStyle('#351a1a', '#7a2b2b')}
-                >
-                  Stop Session
-                </button>
+                  tone="danger"
+                />
               </div>
               <p style={{ margin: 0, color: sessionActive ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
                 {sessionActive ? 'Session is live for everyone on this page.' : 'Session is currently inactive.'}
@@ -1600,30 +1707,36 @@ export default function VttClient() {
                     <option key={result.id} value={result.id}>{result.fileName} ({new Date(result.createdAt).toLocaleDateString()})</option>
                   ))}
                 </select>
-                <button onClick={linkMap} disabled={!linkResultId || !activeMap} style={{ ...buttonStyle('#1f2736', '#3d5f95'), marginTop: '0.45rem', width: '100%' }}>
-                  Link Active Map
-                </button>
+                <div style={{ marginTop: '0.45rem' }}>
+                  <IconTileButton
+                    icon="🔗"
+                    label="Link Active Map"
+                    onClick={linkMap}
+                    disabled={!linkResultId || !activeMap}
+                    tone="primary"
+                    fullWidth
+                  />
+                </div>
               </div>
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Setup Tools</div>
                 <div style={toolGridStyle}>
                   {MAP_SETUP_TOOL_IDS.map((toolId) => (
-                    <button
+                    <IconTileButton
                       key={toolId}
-                      type="button"
+                      icon={TOOL_ICONS[toolId]}
+                      label={TOOL_OPTIONS[toolId].label}
                       onClick={() => selectTool(toolId)}
-                      style={toolButtonStyle(tool === toolId)}
-                    >
-                      {TOOL_OPTIONS[toolId].label}
-                    </button>
+                      active={tool === toolId}
+                    />
                   ))}
                 </div>
                 {(tool === 'wall' || tool === 'barrier') && (
                   <>
-                    <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
-                      <button onClick={finalizeDraft} style={buttonStyle('#233622', '#3d8b3a')}>Commit Draft</button>
-                      <button onClick={() => { setDraftPoints([]); setPointerPosition(null) }} style={buttonStyle('#2b2b2b', '#4b4b4b')}>Clear</button>
+                    <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
+                      <IconTileButton icon="✅" label="Commit Draft" onClick={finalizeDraft} tone="success" size="small" />
+                      <IconTileButton icon="🧹" label="Clear Draft" onClick={() => { setDraftPoints([]); setPointerPosition(null) }} tone="muted" size="small" />
                     </div>
                     <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
                       Click an existing point to snap-close the loop.
@@ -1640,7 +1753,7 @@ export default function VttClient() {
                       style={inputStyle}
                       placeholder="Feet between 2 points"
                     />
-                    <button onClick={saveCalibration} style={buttonStyle('#233622', '#3d8b3a')}>Save Calibration</button>
+                    <IconTileButton icon="🎯" label="Save Calibration" onClick={saveCalibration} tone="success" fullWidth />
                   </div>
                 )}
               </div>
@@ -1659,13 +1772,16 @@ export default function VttClient() {
                     <option key={barrier.id} value={barrier.id}>Barrier {index + 1}</option>
                   ))}
                 </select>
-                <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
-                  <button onClick={removeSelectedWall} disabled={!selectedWallId} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete Wall</button>
-                  <button onClick={removeSelectedBarrier} disabled={selectedShape?.kind !== 'barrier'} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete Barrier</button>
+                <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
+                  <IconTileButton icon="🗑️" label="Delete Wall" onClick={removeSelectedWall} disabled={!selectedWallId} tone="danger" size="small" />
+                  <IconTileButton icon="🗑️" label="Delete Barrier" onClick={removeSelectedBarrier} disabled={selectedShape?.kind !== 'barrier'} tone="danger" size="small" />
                 </div>
-                <button onClick={undoMapEdit} disabled={!mapUndoStack.length} style={{ ...buttonStyle('#1f2736', '#3d5f95'), marginTop: '0.4rem', width: '100%' }}>
-                  Undo Last Map Edit
-                </button>
+                <div style={{ marginTop: '0.4rem' }}>
+                  <IconTileButton icon="↩️" label="Undo Last Map Edit" onClick={undoMapEdit} disabled={!mapUndoStack.length} tone="primary" fullWidth />
+                </div>
+                <div style={{ marginTop: '0.35rem' }}>
+                  <IconTileButton icon="🗺️" label="Reset Map" onClick={resetMap} disabled={!activeMap} tone="danger" fullWidth />
+                </div>
                 <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
                   Click and drag selected walls/barriers on the map to reposition them.
                 </p>
@@ -1697,20 +1813,19 @@ export default function VttClient() {
                 <div style={subSectionTitleStyle}>DM Tools</div>
                 <div style={toolGridStyle}>
                   {DM_TOOL_IDS.map((toolId) => (
-                    <button
+                    <IconTileButton
                       key={toolId}
-                      type="button"
+                      icon={TOOL_ICONS[toolId]}
+                      label={TOOL_OPTIONS[toolId].label}
                       onClick={() => selectTool(toolId)}
-                      style={toolButtonStyle(tool === toolId)}
-                    >
-                      {TOOL_OPTIONS[toolId].label}
-                    </button>
+                      active={tool === toolId}
+                    />
                   ))}
                 </div>
                 {tool === 'darkness' && (
-                  <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
-                    <button onClick={finalizeDraft} style={buttonStyle('#233622', '#3d8b3a')}>Commit Draft</button>
-                    <button onClick={() => { setDraftPoints([]); setPointerPosition(null) }} style={buttonStyle('#2b2b2b', '#4b4b4b')}>Clear</button>
+                  <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
+                    <IconTileButton icon="✅" label="Commit Draft" onClick={finalizeDraft} tone="success" size="small" />
+                    <IconTileButton icon="🧹" label="Clear Draft" onClick={() => { setDraftPoints([]); setPointerPosition(null) }} tone="muted" size="small" />
                   </div>
                 )}
               </div>
@@ -1759,9 +1874,9 @@ export default function VttClient() {
                     <option key={token.id} value={token.id}>{token.name}</option>
                   ))}
                 </select>
-                <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
-                  <button onClick={updateNpcToken} disabled={!selectedNpcTokenId} style={buttonStyle('#1f2736', '#3d5f95')}>Update NPC</button>
-                  <button onClick={deleteNpcToken} disabled={!selectedNpcTokenId} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete NPC</button>
+                <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
+                  <IconTileButton icon="💾" label="Update NPC" onClick={updateNpcToken} disabled={!selectedNpcTokenId} tone="primary" />
+                  <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" />
                 </div>
               </div>
             </div>
@@ -1777,26 +1892,48 @@ export default function VttClient() {
             <div style={menuBodyStyle}>
               <div style={toolGridStyle}>
                 {GENERAL_TOOL_IDS.map((toolId) => (
-                  <button
+                  <IconTileButton
                     key={toolId}
-                    type="button"
+                    icon={TOOL_ICONS[toolId]}
+                    label={TOOL_OPTIONS[toolId].label}
                     onClick={() => selectTool(toolId)}
-                    style={toolButtonStyle(tool === toolId)}
-                  >
-                    {TOOL_OPTIONS[toolId].label}
-                  </button>
+                    active={tool === toolId}
+                  />
                 ))}
               </div>
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Shape Creation</div>
-                <label style={labelStyle}>
-                  New shape type
-                  <select value={shapeDraftType} onChange={(event) => setShapeDraftType(event.target.value)} style={inputStyle}>
-                    {SHAPE_TYPE_OPTIONS.map((shapeType) => (
-                      <option key={shapeType.id} value={shapeType.id}>{shapeType.label}</option>
-                    ))}
-                  </select>
+                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.2rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={showDarknessZones}
+                    onChange={(event) => setShowDarknessZones(event.target.checked)}
+                  />
+                  Show darkness zones
                 </label>
+                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={showBarriers}
+                    onChange={(event) => setShowBarriers(event.target.checked)}
+                  />
+                  Show barriers
+                </label>
+                <div style={{ marginBottom: '0.35rem' }}>
+                  <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
+                  <div style={toolGridStyle}>
+                    {SHAPE_TYPE_OPTIONS.map((shapeType) => (
+                      <IconTileButton
+                        key={shapeType.id}
+                        icon={shapeType.id === 'circle' ? '⚪' : shapeType.id === 'square' ? '⬜' : shapeType.id === 'triangle' ? '🔺' : '▭'}
+                        label={shapeType.label}
+                        onClick={() => setShapeDraftType(shapeType.id)}
+                        active={shapeDraftType === shapeType.id}
+                        size="small"
+                      />
+                    ))}
+                  </div>
+                </div>
                 <label style={{ ...labelStyle, marginBottom: 0 }}>
                   New shape color
                   <select value={shapeDraftColor} onChange={(event) => setShapeDraftColor(event.target.value)} style={inputStyle}>
@@ -1833,7 +1970,9 @@ export default function VttClient() {
                       ))}
                     </select>
                   )}
-                  <button onClick={removeShape} style={{ ...buttonStyle('#351a1a', '#7a2b2b'), width: '100%', marginTop: '0.4rem' }}>Remove Shape</button>
+                  <div style={{ marginTop: '0.4rem' }}>
+                    <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
+                  </div>
                 </>
               )}
             </div>
@@ -1849,34 +1988,65 @@ export default function VttClient() {
             <div style={menuBodyStyle}>
               <div style={toolGridStyle}>
                 {PLAYER_TOOL_IDS.map((toolId) => (
-                  <button
+                  <IconTileButton
                     key={toolId}
-                    type="button"
+                    icon={TOOL_ICONS[toolId]}
+                    label={TOOL_OPTIONS[toolId].label}
                     onClick={() => selectTool(toolId)}
-                    style={toolButtonStyle(tool === toolId)}
-                  >
-                    {TOOL_OPTIONS[toolId].label}
-                  </button>
+                    active={tool === toolId}
+                  />
                 ))}
               </div>
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Focused View</div>
-                <select value={focusedPlayerTokenId} onChange={(event) => selectFocusedPlayer(event.target.value)} style={inputStyle}>
-                  <option value="dm">Dungeon Master View</option>
+                <IconTileButton
+                  icon="🛡️"
+                  label="Dungeon Master View"
+                  onClick={() => selectFocusedPlayer('dm')}
+                  active={focusedPlayerTokenId === 'dm' || viewMode === 'dm'}
+                  size="large"
+                  fullWidth
+                />
+                <div style={{ ...toolGridStyle, marginTop: '0.35rem' }}>
                   {playerTokens.map((token) => (
-                    <option key={token.id} value={token.id}>{token.name}</option>
+                    <IconTileButton
+                      key={token.id}
+                      icon="🧙"
+                      label={token.name}
+                      onClick={() => selectFocusedPlayer(token.id)}
+                      active={focusedPlayerTokenId === token.id && viewMode === 'player'}
+                      size="small"
+                    />
                   ))}
-                </select>
+                </div>
               </div>
 
               {tool === 'path' && (
                 <div style={{ marginTop: '0.5rem', display: 'grid', gap: '0.3rem' }}>
-                  <button onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])} style={buttonStyle('#2b2b2b', '#4b4b4b')}>
-                    Start Path From Token
-                  </button>
-                  <button onClick={finalizePathMove} style={buttonStyle('#233622', '#3d8b3a')}>Animate Path Move</button>
-                  <button onClick={() => setPathPoints([])} style={buttonStyle('#2b2b2b', '#4b4b4b')}>Clear Path</button>
+                  <div style={iconTileGridStyle}>
+                    <IconTileButton
+                      icon="📍"
+                      label="Start Path"
+                      onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])}
+                      tone="muted"
+                      size="small"
+                    />
+                    <IconTileButton
+                      icon="🏃"
+                      label="Animate Move"
+                      onClick={finalizePathMove}
+                      tone="success"
+                      size="small"
+                    />
+                    <IconTileButton
+                      icon="🧹"
+                      label="Clear Path"
+                      onClick={() => setPathPoints([])}
+                      tone="muted"
+                      size="small"
+                    />
+                  </div>
                   <div style={{ fontSize: '0.78rem', color: '#888' }}>
                     Used: {formatFeet(pathFeet)} ft | Remaining: {formatFeet(movementRemaining)} ft
                   </div>
@@ -1919,7 +2089,16 @@ export default function VttClient() {
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Update Existing Player Token</div>
-                <select value={selectedTokenId} onChange={(event) => setSelectedTokenId(event.target.value)} style={inputStyle}>
+                <select
+                  value={selectedTokenId}
+                  onChange={(event) => {
+                    setSelectedTokenId(event.target.value)
+                    if (event.target.value) {
+                      selectFocusedPlayer(event.target.value)
+                    }
+                  }}
+                  style={inputStyle}
+                >
                   <option value="">Select token</option>
                   {playerTokens.map((tokenEntry) => (
                     <option key={tokenEntry.id} value={tokenEntry.id}>{tokenEntry.name}</option>
@@ -1933,8 +2112,10 @@ export default function VttClient() {
                   />
                   Player has dark vision
                 </label>
-                <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
-                  <button
+                <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
+                  <IconTileButton
+                    icon="💾"
+                    label="Update Player"
                     onClick={() => {
                       if (!selectedTokenId) return
                       callMutation('updateToken', {
@@ -1946,11 +2127,9 @@ export default function VttClient() {
                         role: 'player',
                       }).catch((err) => setError(err.message))
                     }}
-                    style={buttonStyle('#1f2736', '#3d5f95')}
-                  >
-                    Update
-                  </button>
-                  <button onClick={removeToken} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete</button>
+                    tone="primary"
+                  />
+                  <IconTileButton icon="🗑️" label="Delete Player" onClick={removeToken} tone="danger" />
                 </div>
               </div>
 
@@ -1966,9 +2145,7 @@ export default function VttClient() {
                     style={inputStyle}
                   />
                 </label>
-                <button onClick={saveCharacter} disabled={!activeMap} style={{ ...buttonStyle('#1f2736', '#3d5f95'), width: '100%' }}>
-                  Save Move Speed
-                </button>
+                <IconTileButton icon="⚙️" label="Save Move Speed" onClick={saveCharacter} disabled={!activeMap} tone="primary" fullWidth />
               </div>
             </div>
           )}
@@ -1989,7 +2166,16 @@ export default function VttClient() {
         )}
 
         {activeMap && sessionActive && (
-          <div style={{ position: 'relative', width: stageWidth, height: stageHeight, border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a', overflow: 'hidden' }}>
+          <>
+          <div style={{ marginBottom: '0.45rem' }}>
+            <div style={iconTileGridStyle}>
+              <IconTileButton icon="➖" label="Zoom Out" onClick={zoomOut} tone="primary" size="small" />
+              <IconTileButton icon="➕" label="Zoom In" onClick={zoomIn} tone="primary" size="small" />
+              <IconTileButton icon="🔁" label="Reset Zoom" onClick={resetZoom} tone="muted" size="small" />
+            </div>
+            <span style={{ color: '#8f8f8f', fontSize: '0.76rem' }}>{Math.round(mapZoom * 100)}%</span>
+          </div>
+          <div style={{ position: 'relative', width: stageWidth, height: stageHeight, border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a', overflow: 'auto' }}>
             <img
               src={activeMap.assetUrl}
               alt={`Map ${activeMap.name}`}
@@ -1999,8 +2185,8 @@ export default function VttClient() {
                 position: 'absolute',
                 left: 0,
                 top: 0,
-                width: activeMap.width,
-                height: activeMap.height,
+                width: activeMap.width * mapZoom,
+                height: activeMap.height * mapZoom,
                 maxWidth: 'none',
                 maxHeight: 'none',
                 userSelect: 'none',
@@ -2008,8 +2194,10 @@ export default function VttClient() {
               }}
             />
             <Stage
-              width={stageWidth}
-              height={stageHeight}
+              width={zoomedStageWidth}
+              height={zoomedStageHeight}
+              scaleX={mapZoom}
+              scaleY={mapZoom}
               onClick={onStageClick}
               onMouseDown={onStagePointerDown}
               onMouseMove={onStagePointerMove}
@@ -2060,7 +2248,7 @@ export default function VttClient() {
                 />
               ))}
 
-              {(activeState?.darknessZones ?? []).map((zone) => (
+              {showDarknessZones && (activeState?.darknessZones ?? []).map((zone) => (
                 <Line
                   key={zone.id}
                   points={flattenPoints(zone.points)}
@@ -2073,6 +2261,8 @@ export default function VttClient() {
               ))}
 
               {(activeState?.shapes ?? []).map((shape) => {
+                if (shape.kind === 'barrier' && !showBarriers) return null
+                if (shape.kind === 'darkness' && !showDarknessZones) return null
                 const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
                 const mergedShape = preview ? { ...shape, ...preview } : shape
                 const colorName = inferShapeColorId(shape)
@@ -2267,6 +2457,33 @@ export default function VttClient() {
             </Layer>
 
             <Layer>
+              {ghostNpcTokens.map((token) => (
+                <Circle
+                  key={`ghost:${token.id}`}
+                  x={token.x}
+                  y={token.y}
+                  radius={TOKEN_RADIUS[token.size] ?? TOKEN_RADIUS.medium}
+                  fill="rgba(166,166,166,0.35)"
+                  stroke={RING_COLORS[token.ringColor] ?? 'rgba(255,255,255,0.25)'}
+                  strokeWidth={3}
+                  listening={false}
+                />
+              ))}
+
+              {ghostNpcTokens.map((token) => (
+                <Text
+                  key={`ghost-label:${token.id}`}
+                  x={token.x - 40}
+                  y={token.y - 31}
+                  width={80}
+                  align="center"
+                  text={token.name}
+                  fontSize={10}
+                  fill="rgba(230,230,230,0.45)"
+                  listening={false}
+                />
+              ))}
+
               {(activeState?.tokens ?? []).filter((token) => visibleTokenIds.has(token.id)).map((token) => (
                 <Circle
                   key={token.id}
@@ -2280,8 +2497,8 @@ export default function VttClient() {
                   onClick={(event) => {
                     event.cancelBubble = true
                     setSelectedTokenId(token.id)
-                    if (token.role === 'player' && viewMode === 'player') {
-                      setFocusedPlayerTokenId(token.id)
+                    if (token.role === 'player') {
+                      selectFocusedPlayer(token.id)
                     }
                     if (token.role === 'npc') {
                       setSelectedNpcTokenId(token.id)
@@ -2343,6 +2560,7 @@ export default function VttClient() {
             </Layer>
             </Stage>
           </div>
+          </>
         )}
 
         <div style={{ marginTop: '0.55rem', display: 'flex', justifyContent: 'space-between', color: '#777', fontSize: '0.78rem' }}>
@@ -2357,28 +2575,96 @@ export default function VttClient() {
   )
 }
 
-function buttonStyle(bg, borderColor) {
-  return {
-    background: bg,
-    border: `1px solid ${borderColor}`,
-    color: '#ddd',
-    borderRadius: '6px',
-    padding: '0.45rem 0.65rem',
-    fontSize: '0.8rem',
-    cursor: 'pointer',
-  }
+function IconTileButton({
+  icon,
+  label,
+  onClick,
+  disabled = false,
+  active = false,
+  tone = 'neutral',
+  size = 'normal',
+  fullWidth = false,
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      style={iconTileButtonStyle({ active, disabled, tone, size, fullWidth })}
+    >
+      <span style={iconTileIconStyle}>{icon}</span>
+      <span style={iconTileLabelStyle}>{label}</span>
+    </button>
+  )
 }
 
-function toolButtonStyle(active) {
+function iconTileButtonStyle({ active, disabled, tone, size, fullWidth }) {
+  const tones = {
+    neutral: {
+      bg: '#171717',
+      border: '#323232',
+      text: '#d4d4d4',
+      activeBg: '#263b67',
+      activeBorder: '#6fa3ff',
+      activeText: '#f2f7ff',
+    },
+    primary: {
+      bg: '#16243f',
+      border: '#315287',
+      text: '#d8e6ff',
+      activeBg: '#2e4f86',
+      activeBorder: '#7caeff',
+      activeText: '#f4f8ff',
+    },
+    success: {
+      bg: '#152b1f',
+      border: '#2c6c4a',
+      text: '#d8f5e3',
+      activeBg: '#2d5f44',
+      activeBorder: '#73c796',
+      activeText: '#eefff3',
+    },
+    danger: {
+      bg: '#2a1717',
+      border: '#6c3232',
+      text: '#ffd5d5',
+      activeBg: '#6b2f2f',
+      activeBorder: '#ff9f9f',
+      activeText: '#fff3f3',
+    },
+    muted: {
+      bg: '#1a1a1a',
+      border: '#3a3a3a',
+      text: '#c8c8c8',
+      activeBg: '#2b2b2b',
+      activeBorder: '#8a8a8a',
+      activeText: '#f2f2f2',
+    },
+  }
+  const palette = tones[tone] ?? tones.neutral
+  const isSmall = size === 'small'
+  const isLarge = size === 'large'
+
   return {
-    background: active ? '#2f4f89' : '#1a1a1a',
-    border: active ? '1px solid #6fa3ff' : '1px solid #303030',
-    color: active ? '#f2f7ff' : '#bbb',
-    borderRadius: '6px',
-    padding: '0.4rem 0.5rem',
-    fontSize: '0.76rem',
-    cursor: 'pointer',
     width: '100%',
+    minHeight: fullWidth ? (isLarge ? '88px' : '74px') : (isSmall ? '72px' : isLarge ? '102px' : '86px'),
+    aspectRatio: fullWidth ? 'auto' : '1 / 1',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: isSmall ? '0.24rem' : '0.32rem',
+    borderRadius: isSmall ? '14px' : '16px',
+    border: `1px solid ${active ? palette.activeBorder : palette.border}`,
+    background: active ? palette.activeBg : palette.bg,
+    color: active ? palette.activeText : palette.text,
+    opacity: disabled ? 0.48 : 1,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    padding: isSmall ? '0.34rem 0.3rem' : '0.48rem 0.42rem',
+    lineHeight: 1.12,
+    textAlign: 'center',
+    transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease',
+    boxShadow: active ? '0 0 0 1px rgba(255,255,255,0.08) inset' : 'none',
   }
 }
 
@@ -2441,12 +2727,25 @@ const subSectionTitleStyle = {
   color: '#8f8f8f',
 }
 
-const rowButtonStyle = {
-  display: 'flex',
-  gap: '0.4rem',
+const iconTileIconStyle = {
+  fontSize: '1.06rem',
+  lineHeight: 1,
+}
+
+const iconTileLabelStyle = {
+  fontSize: '0.67rem',
+  fontWeight: 600,
+  color: 'inherit',
+}
+
+const iconTileGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gap: '0.35rem',
 }
 
 const toolGridStyle = {
   display: 'grid',
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   gap: '0.35rem',
 }

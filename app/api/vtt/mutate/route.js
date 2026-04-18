@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { emitVttEvent } from '@/lib/pusher'
 import { mergeExploredCells } from '@/lib/vttGeometry.mjs'
+import { createDefaultVttState } from '@/lib/vttDefaults'
 import {
   getMap,
   getOrCreateState,
@@ -261,6 +262,11 @@ function applyMutation(currentState, op, payload) {
           gridSize: Number(payload?.gridSize) || currentState.fog?.gridSize || 24,
           exploredCells: mergeExploredCells(currentState.fog?.exploredCells, incoming),
         },
+      }
+    }
+    case 'resetMapState': {
+      return {
+        ...createDefaultVttState(),
       }
     }
     default:
