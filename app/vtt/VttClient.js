@@ -43,6 +43,12 @@ const MAP_SETUP_TOOL_IDS = ['select', 'wall', 'darkness', 'calibrate']
 const DM_TOOL_IDS = ['npcToken']
 const GENERAL_TOOL_IDS = ['measure', 'shape', 'ping']
 const PLAYER_TOOL_IDS = ['move', 'path']
+const DEFAULT_RAIL_SUBMENU_BY_MENU = {
+  mapSetup: 'session',
+  dungeonMaster: 'fog',
+  generalMapTools: 'tools',
+  player: 'focus',
+}
 
 const RING_COLORS = {
   clear: 'transparent',
@@ -698,12 +704,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [pingClock, setPingClock] = useState(Date.now())
   const [shapePreview, setShapePreview] = useState(null)
   const [animatedTokenPositions, setAnimatedTokenPositions] = useState({})
-  const [expandedMenus, setExpandedMenus] = useState({
-    mapSetup: true,
-    dungeonMaster: true,
-    generalMapTools: true,
-    player: true,
-  })
+  const [activeRailMenu, setActiveRailMenu] = useState(isDm ? 'mapSetup' : 'generalMapTools')
+  const [activeRailSubmenus, setActiveRailSubmenus] = useState(DEFAULT_RAIL_SUBMENU_BY_MENU)
 
   const containerRef = useRef(null)
   const [stageWidth, setStageWidth] = useState(1100)
@@ -1849,8 +1851,24 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     await refresh()
   }, [activeMap, clientId, linkResultId, refresh])
 
-  const toggleMenu = useCallback((menuName) => {
-    setExpandedMenus((prev) => ({ ...prev, [menuName]: !prev[menuName] }))
+  useEffect(() => {
+    if (!isDm && (activeRailMenu === 'mapSetup' || activeRailMenu === 'dungeonMaster')) {
+      setActiveRailMenu('generalMapTools')
+    }
+  }, [activeRailMenu, isDm])
+
+  const toggleRailMenu = useCallback((menuId) => {
+    setActiveRailMenu((prev) => (prev === menuId ? '' : menuId))
+    setActiveRailSubmenus((prev) => (
+      prev[menuId]
+        ? prev
+        : { ...prev, [menuId]: DEFAULT_RAIL_SUBMENU_BY_MENU[menuId] || '' }
+    ))
+  }, [])
+
+  const selectRailSubmenu = useCallback((menuId, submenuId) => {
+    setActiveRailMenu(menuId)
+    setActiveRailSubmenus((prev) => ({ ...prev, [menuId]: submenuId }))
   }, [])
 
   const selectTool = useCallback((toolId) => {
@@ -2100,18 +2118,528 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const zoomedStageWidth = Math.round(stageWidth * mapZoom)
   const zoomedStageHeight = Math.round(stageHeight * mapZoom)
   const canRenderBoard = Boolean(activeMap) && (isDm ? sessionStatus !== 'closed' : sessionStatus === 'active')
+  const railMenuOptions = [
+    ...(isDm
+      ? [
+        { id: 'mapSetup', icon: '🗺️', label: 'Map Setup' },
+        { id: 'dungeonMaster', icon: '🧙', label: 'Dungeon Master' },
+      ]
+      : []),
+    { id: 'generalMapTools', icon: '🧰', label: 'General Tools' },
+    { id: 'player', icon: '👥', label: 'Player' },
+  ]
+  const railSubmenuOptionsByMenu = {
+    mapSetup: [
+      { id: 'session', icon: '🎬', label: 'Session' },
+      { id: 'upload', icon: '📄', label: 'Upload' },
+      { id: 'link', icon: '🔗', label: 'Link' },
+      { id: 'setup', icon: '🧱', label: 'Setup Tools' },
+      { id: 'walls', icon: '↩️', label: 'Walls + Darkness' },
+    ],
+    dungeonMaster: [
+      { id: 'fog', icon: '🌫️', label: 'Fog' },
+      { id: 'tools', icon: '👤', label: 'DM Tools' },
+      { id: 'npcSetup', icon: '⚙️', label: 'NPC Setup' },
+      { id: 'npcManage', icon: '🗑️', label: 'Manage NPCs' },
+    ],
+    generalMapTools: [
+      { id: 'tools', icon: '📏', label: 'Tools' },
+      { id: 'shape', icon: '🔷', label: 'Shape Tool' },
+    ],
+    player: [
+      { id: 'focus', icon: '🎯', label: 'Focused View' },
+      { id: 'tools', icon: '👣', label: 'Movement Tools' },
+      { id: 'path', icon: '🏃', label: 'Path Actions' },
+      { id: 'movement', icon: '⚡', label: 'Move Speed' },
+    ],
+  }
+  const activeSubmenuOptions = railSubmenuOptionsByMenu[activeRailMenu] ?? []
+  const activeRailSubmenu = activeRailSubmenus[activeRailMenu] || activeSubmenuOptions[0]?.id || ''
+  const activeMenuLabel = railMenuOptions.find((menu) => menu.id === activeRailMenu)?.label || ''
+  const activeSubmenuLabel = activeSubmenuOptions.find((submenu) => submenu.id === activeRailSubmenu)?.label || ''
+
+  function renderRailContent() {
+    if (activeRailMenu === 'mapSetup') {
+      if (activeRailSubmenu === 'session') {
+        return (
+          <>
+            <select
+              value={startMapId}
+              onChange={(event) => {
+                const nextMapId = event.target.value
+                setStartMapId(nextMapId)
+                setSessionState({ mapId: nextMapId, status: 'preparing' }).catch((err) => setError(err.message))
+              }}
+              style={inputStyle}
+            >
+              <option value="">Select map</option>
+              {(bundle?.maps ?? []).map((map) => (
+                <option key={map.id} value={map.id}>
+                  {map.name} ({map.id.slice(0, 6)})
+                </option>
+              ))}
+            </select>
+            <div style={iconTileGridStyle}>
+              <IconTileButton
+                icon="🧰"
+                label="DM Preparing"
+                onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'preparing' }).catch((err) => setError(err.message))}
+                tone="neutral"
+                active={sessionStatus === 'preparing'}
+              />
+              <IconTileButton
+                icon="▶️"
+                label="Active"
+                onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'active' }).catch((err) => setError(err.message))}
+                tone="neutral"
+                active={sessionStatus === 'active'}
+              />
+              <IconTileButton
+                icon="⏹️"
+                label="Closed"
+                onClick={() => stopSession().catch((err) => setError(err.message))}
+                tone="neutral"
+                active={sessionStatus === 'closed'}
+              />
+            </div>
+            <p style={{ margin: 0, color: sessionStatus === 'active' ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
+              Status: {sessionStatus === 'active' ? 'Active' : sessionStatus === 'preparing' ? 'DM Preparing' : 'Closed'}
+            </p>
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'upload') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Map Upload (PDF)</div>
+            <input
+              type="text"
+              placeholder="Optional map name"
+              value={mapName}
+              onChange={(event) => setMapName(event.target.value)}
+              style={inputStyle}
+            />
+            <input
+              type="file"
+              accept="application/pdf"
+              disabled={uploading}
+              onChange={(event) => uploadPdfMap(event.target.files?.[0])}
+              style={{ marginTop: '0.25rem', fontSize: '0.8rem', width: '100%' }}
+            />
+            <p style={{ margin: 0, color: '#666', fontSize: '0.75rem' }}>
+              First page only, max 50MB.
+            </p>
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'link') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Link Map To Session</div>
+            <select value={linkResultId} onChange={(event) => setLinkResultId(event.target.value)} style={inputStyle}>
+              <option value="">Select session result</option>
+              {results.map((result) => (
+                <option key={result.id} value={result.id}>{result.fileName} ({new Date(result.createdAt).toLocaleDateString()})</option>
+              ))}
+            </select>
+            <IconTileButton
+              icon="🔗"
+              label="Link Active Map"
+              onClick={linkMap}
+              disabled={!linkResultId || !activeMap}
+              tone="primary"
+              fullWidth
+            />
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'setup') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Setup Tools</div>
+            <div style={toolGridStyle}>
+              {MAP_SETUP_TOOL_IDS.map((toolId) => (
+                <IconTileButton
+                  key={toolId}
+                  icon={TOOL_ICONS[toolId]}
+                  label={TOOL_OPTIONS[toolId].label}
+                  onClick={() => selectTool(toolId)}
+                  active={tool === toolId}
+                />
+              ))}
+            </div>
+            {(tool === 'wall' || tool === 'darkness' || tool === 'calibrate') && (
+              <>
+                <div style={{ ...iconTileGridStyle, marginTop: '0.1rem' }}>
+                  <IconTileButton icon="✅" label={tool === 'calibrate' ? 'Save Calibration' : 'Commit Draft'} onClick={finalizeDraft} tone="success" size="small" />
+                  <IconTileButton icon="🧹" label="Clear Draft" onClick={() => { setDraftPoints([]); setPointerPosition(null) }} tone="muted" size="small" />
+                </div>
+                <p style={{ margin: '0.15rem 0 0', color: '#777', fontSize: '0.75rem' }}>
+                  {tool === 'calibrate' ? 'Calibration uses two points max.' : 'Click an existing point to snap-close the loop.'}
+                </p>
+              </>
+            )}
+            {tool === 'calibrate' && (
+              <input
+                type="number"
+                min="1"
+                value={calibrationFeet}
+                onChange={(event) => setCalibrationFeet(event.target.value)}
+                style={inputStyle}
+                placeholder="Feet between 2 points (default 5)"
+              />
+            )}
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'walls') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Walls + Darkness</div>
+            <p style={{ margin: 0, color: '#8c8c8c', fontSize: '0.75rem' }}>
+              Use `Select` tool, then click a wall or darkness zone to select.
+            </p>
+            <p style={{ margin: 0, color: '#8c8c8c', fontSize: '0.75rem' }}>
+              Selected: {selectedStructure.kind ? `${selectedStructure.kind} (${selectedStructure.ids.length})` : 'none'}
+            </p>
+            <IconTileButton icon="↩️" label="Undo Last Map Edit" onClick={undoMapEdit} disabled={!mapUndoStack.length} tone="primary" fullWidth />
+            <IconTileButton icon="🗺️" label="Reset Map" onClick={resetMap} disabled={!activeMap} tone="danger" fullWidth />
+            <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>
+              Drag selected walls to reposition. Delete/Backspace removes selected walls or darkness.
+            </p>
+          </>
+        )
+      }
+      return null
+    }
+
+    if (activeRailMenu === 'dungeonMaster') {
+      if (activeRailSubmenu === 'fog') {
+        return (
+          <>
+            <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
+              <input
+                type="checkbox"
+                checked={Boolean(activeState?.fog?.enabled)}
+                disabled={!activeMap}
+                onChange={(event) => {
+                  callMutation('setFogEnabled', { enabled: event.target.checked }).catch((err) => setError(err.message))
+                }}
+              />
+              Enable fog of war
+            </label>
+            <IconTileButton
+              icon="👁️"
+              label="Reset Player Vision"
+              onClick={() => {
+                callMutation('resetFogExplored', {})
+                  .catch((err) => setError(err.message))
+              }}
+              disabled={!activeMap}
+              tone="muted"
+              fullWidth
+            />
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'tools') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>DM Tools</div>
+            <div style={toolGridStyle}>
+              {DM_TOOL_IDS.map((toolId) => (
+                <IconTileButton
+                  key={toolId}
+                  icon={TOOL_ICONS[toolId]}
+                  label={TOOL_OPTIONS[toolId].label}
+                  onClick={() => selectTool(toolId)}
+                  active={tool === toolId}
+                />
+              ))}
+            </div>
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'npcSetup') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>NPC Token Setup</div>
+            <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>
+              Use Add NPC Token tool, then click map to place.
+            </p>
+            <div style={{ marginTop: '0.2rem', display: 'grid', gap: '0.35rem' }}>
+              <input
+                type="text"
+                value={npcTokenDraft.name}
+                onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, name: event.target.value }))}
+                placeholder="NPC token name"
+                style={inputStyle}
+              />
+              <select value={npcTokenDraft.size} onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, size: event.target.value }))} style={inputStyle}>
+                <option value="small">Small</option>
+                <option value="medium">Medium</option>
+                <option value="large">Large</option>
+              </select>
+              <select value={npcTokenDraft.ringColor} onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, ringColor: event.target.value }))} style={inputStyle}>
+                <option value="clear">Ring: Clear</option>
+                <option value="white">Ring: White</option>
+                <option value="black">Ring: Black</option>
+                <option value="red">Ring: Red</option>
+                <option value="blue">Ring: Blue</option>
+              </select>
+              <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(npcTokenDraft.darkvision)}
+                  onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, darkvision: event.target.checked }))}
+                />
+                NPC has dark vision
+              </label>
+              <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(npcTokenDraft.hidden)}
+                  onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, hidden: event.target.checked }))}
+                />
+                Hidden from players
+              </label>
+            </div>
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'npcManage') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Manage NPC Tokens</div>
+            <select value={selectedNpcTokenId} onChange={(event) => selectNpcToken(event.target.value)} style={inputStyle}>
+              <option value="">Select NPC token</option>
+              {npcTokens.map((token) => (
+                <option key={token.id} value={token.id}>{token.name}</option>
+              ))}
+            </select>
+            <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" />
+          </>
+        )
+      }
+      return null
+    }
+
+    if (activeRailMenu === 'generalMapTools') {
+      if (activeRailSubmenu === 'tools') {
+        return (
+          <>
+            <div style={toolGridStyle}>
+              {GENERAL_TOOL_IDS.map((toolId) => (
+                <IconTileButton
+                  key={toolId}
+                  icon={TOOL_ICONS[toolId]}
+                  label={TOOL_OPTIONS[toolId].label}
+                  onClick={() => selectTool(toolId)}
+                  active={tool === toolId}
+                />
+              ))}
+            </div>
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'shape') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Shape Creation</div>
+            <div>
+              <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
+              <div style={toolGridStyle}>
+                {SHAPE_TYPE_OPTIONS.map((shapeType) => (
+                  <IconTileButton
+                    key={shapeType.id}
+                    icon={shapeType.id === 'circle' ? '⚪' : shapeType.id === 'square' ? '⬜' : shapeType.id === 'triangle' ? '🔺' : '▭'}
+                    label={shapeType.label}
+                    onClick={() => setShapeDraftType(shapeType.id)}
+                    active={shapeDraftType === shapeType.id}
+                    size="small"
+                  />
+                ))}
+              </div>
+            </div>
+            <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>
+              Select Shape Tool, then click map to place. New shapes default to blue.
+            </p>
+            <select value={selectedShapeId} onChange={(event) => setSelectedShapeId(event.target.value)} style={inputStyle}>
+              <option value="">Select shape</option>
+              {(activeState?.shapes ?? []).map((shape) => (
+                <option key={shape.id} value={shape.id}>
+                  {(shape.shapeType || shape.kind)} ({shape.id.slice(0, 6)})
+                </option>
+              ))}
+            </select>
+            {selectedShape && (
+              <>
+                {selectedShape.shapeType && (
+                  <select
+                    value={selectedShapeColor}
+                    onChange={(event) => {
+                      setSelectedShapeColor(event.target.value)
+                      updateShapeColor(selectedShape, event.target.value)
+                    }}
+                    style={inputStyle}
+                  >
+                    {SHAPE_COLOR_OPTIONS.map((entry) => (
+                      <option key={entry.id} value={entry.id}>{entry.label}</option>
+                    ))}
+                  </select>
+                )}
+                <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
+              </>
+            )}
+          </>
+        )
+      }
+      return null
+    }
+
+    if (activeRailMenu === 'player') {
+      if (activeRailSubmenu === 'focus') {
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Focused View</div>
+            {isDm ? (
+              <div style={{ display: 'grid', gap: '0.4rem', marginTop: '0.2rem' }}>
+                <button
+                  type="button"
+                  onClick={() => selectFocusedPlayer('dm')}
+                  style={{
+                    ...focusPillStyle,
+                    width: '100%',
+                    minHeight: '44px',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    background: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#2a4f82' : '#1a1a1a',
+                    borderColor: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#7caeff' : '#3a3a3a',
+                  }}
+                >
+                  DM View
+                </button>
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'nowrap' }}>
+                  {playerTokens.map((token) => (
+                    <button
+                      key={token.id}
+                      type="button"
+                      onClick={() => selectFocusedPlayer(token.id)}
+                      style={{
+                        ...focusPillStyle,
+                        flex: 1,
+                        minWidth: 0,
+                        background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
+                        borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
+                      }}
+                    >
+                      {token.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <select
+                value={focusedPlayerTokenId}
+                onChange={(event) => selectFocusedPlayer(event.target.value)}
+                style={inputStyle}
+              >
+                <option value="">Select your character view</option>
+                {playerTokens.map((token) => (
+                  <option key={token.id} value={token.id}>{token.name}</option>
+                ))}
+              </select>
+            )}
+          </>
+        )
+      }
+      if (activeRailSubmenu === 'tools') {
+        if (isDm && viewMode !== 'player') {
+          return <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>Switch focus to a player to use movement tools.</p>
+        }
+        return (
+          <div style={toolGridStyle}>
+            {PLAYER_TOOL_IDS.map((toolId) => (
+              <IconTileButton
+                key={toolId}
+                icon={TOOL_ICONS[toolId]}
+                label={TOOL_OPTIONS[toolId].label}
+                onClick={() => selectTool(toolId)}
+                active={tool === toolId}
+              />
+            ))}
+          </div>
+        )
+      }
+      if (activeRailSubmenu === 'path') {
+        if (isDm && viewMode !== 'player') {
+          return <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>Switch focus to a player to run path actions.</p>
+        }
+        return (
+          <div style={{ display: 'grid', gap: '0.3rem' }}>
+            <div style={iconTileGridStyle}>
+              <IconTileButton
+                icon="📍"
+                label="Start Path"
+                onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])}
+                tone="muted"
+                size="small"
+              />
+              <IconTileButton
+                icon="🏃"
+                label="Animate Move"
+                onClick={finalizePathMove}
+                tone="success"
+                size="small"
+              />
+              <IconTileButton
+                icon="🧹"
+                label="Clear Path"
+                onClick={() => setPathPoints([])}
+                tone="muted"
+                size="small"
+              />
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#888' }}>
+              Used: {formatFeet(pathFeet)} ft | Remaining: {formatFeet(movementRemaining)} ft
+            </div>
+          </div>
+        )
+      }
+      if (activeRailSubmenu === 'movement') {
+        if (isDm && viewMode !== 'player') {
+          return <p style={{ margin: 0, color: '#777', fontSize: '0.75rem' }}>Switch focus to a player to edit movement speed.</p>
+        }
+        return (
+          <>
+            <div style={subSectionTitleStyle}>Path + Movement</div>
+            <label style={labelStyle}>
+              Move speed (ft)
+              <input
+                type="number"
+                min="1"
+                value={character.moveSpeed}
+                onChange={(event) => setCharacter((prev) => ({ ...prev, moveSpeed: Number(event.target.value) || 30 }))}
+                style={inputStyle}
+              />
+            </label>
+            <IconTileButton icon="⚙️" label="Save Move Speed" onClick={saveCharacter} disabled={!activeMap} tone="primary" fullWidth />
+          </>
+        )
+      }
+      return null
+    }
+
+    return null
+  }
 
   return (
-    <main style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '1rem' }}>
-      <aside style={{ border: '1px solid #2d2d2d', borderRadius: '10px', padding: '0.9rem', height: 'fit-content', background: '#141414' }}>
-        <h2 style={{ marginTop: 0, marginBottom: '0.4rem', fontSize: '1.1rem', color: '#c8a96e' }}>Virtual Tabletop</h2>
-        <p style={{ marginTop: 0, color: '#777', fontSize: '0.8rem' }}>
-          Live map controls, token movement, fog of war, and synced drawing tools.
-        </p>
-        <div style={{ marginBottom: '0.8rem', color: '#999', fontSize: '0.78rem' }}>
-          Active tool: <span style={{ color: '#d6d6d6' }}>{TOOL_OPTIONS[tool]?.label || 'None'}</span>
+    <main style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.8rem' }}>
+      <section ref={containerRef} style={{ border: '1px solid #2d2d2d', borderRadius: '10px', background: '#111', padding: '0.6rem' }}>
+        <div style={topStatusBarStyle}>
+          <span>Virtual Tabletop</span>
+          <span>Active tool: {TOOL_OPTIONS[tool]?.label || 'None'}</span>
         </div>
-
         {error && (
           <div style={{ marginBottom: '0.8rem', color: '#ff8b8b', background: '#2b1414', border: '1px solid #5a2323', borderRadius: '6px', padding: '0.45rem 0.6rem', fontSize: '0.8rem' }}>
             {error}
@@ -2122,477 +2650,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
             {mapRenderError}
           </div>
         )}
-
-        {isDm && (
-        <section style={menuSectionStyle}>
-          <button type="button" onClick={() => toggleMenu('mapSetup')} style={menuToggleStyle}>
-            <span>Map Setup</span>
-            <span>{expandedMenus.mapSetup ? '▾' : '▸'}</span>
-          </button>
-          {expandedMenus.mapSetup && (
-            <div style={menuBodyStyle}>
-              <select
-                value={startMapId}
-                onChange={(event) => {
-                  const nextMapId = event.target.value
-                  setStartMapId(nextMapId)
-                  setSessionState({ mapId: nextMapId, status: 'preparing' }).catch((err) => setError(err.message))
-                }}
-                style={inputStyle}
-              >
-                <option value="">Select map</option>
-                {(bundle?.maps ?? []).map((map) => (
-                  <option key={map.id} value={map.id}>
-                    {map.name} ({map.id.slice(0, 6)})
-                  </option>
-                ))}
-              </select>
-              <div style={iconTileGridStyle}>
-                <IconTileButton
-                  icon="🧰"
-                  label="DM Preparing"
-                  onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'preparing' }).catch((err) => setError(err.message))}
-                  tone="neutral"
-                  active={sessionStatus === 'preparing'}
-                />
-                <IconTileButton
-                  icon="▶️"
-                  label="Active"
-                  onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'active' }).catch((err) => setError(err.message))}
-                  tone="neutral"
-                  active={sessionStatus === 'active'}
-                />
-                <IconTileButton
-                  icon="⏹️"
-                  label="Closed"
-                  onClick={() => stopSession().catch((err) => setError(err.message))}
-                  tone="neutral"
-                  active={sessionStatus === 'closed'}
-                />
-              </div>
-              <p style={{ margin: 0, color: sessionStatus === 'active' ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
-                Status: {sessionStatus === 'active' ? 'Active' : sessionStatus === 'preparing' ? 'DM Preparing' : 'Closed'}
-              </p>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Map Upload (PDF)</div>
-                <input
-                  type="text"
-                  placeholder="Optional map name"
-                  value={mapName}
-                  onChange={(event) => setMapName(event.target.value)}
-                  style={inputStyle}
-                />
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  disabled={uploading}
-                  onChange={(event) => uploadPdfMap(event.target.files?.[0])}
-                  style={{ marginTop: '0.5rem', fontSize: '0.8rem', width: '100%' }}
-                />
-                <p style={{ margin: '0.4rem 0 0', color: '#666', fontSize: '0.75rem' }}>
-                  First page only, max 50MB.
-                </p>
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Link Map To Session</div>
-                <select value={linkResultId} onChange={(event) => setLinkResultId(event.target.value)} style={inputStyle}>
-                  <option value="">Select session result</option>
-                  {results.map((result) => (
-                    <option key={result.id} value={result.id}>{result.fileName} ({new Date(result.createdAt).toLocaleDateString()})</option>
-                  ))}
-                </select>
-                <div style={{ marginTop: '0.45rem' }}>
-                  <IconTileButton
-                    icon="🔗"
-                    label="Link Active Map"
-                    onClick={linkMap}
-                    disabled={!linkResultId || !activeMap}
-                    tone="primary"
-                    fullWidth
-                  />
-                </div>
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Setup Tools</div>
-                <div style={toolGridStyle}>
-                  {MAP_SETUP_TOOL_IDS.map((toolId) => (
-                    <IconTileButton
-                      key={toolId}
-                      icon={TOOL_ICONS[toolId]}
-                      label={TOOL_OPTIONS[toolId].label}
-                      onClick={() => selectTool(toolId)}
-                      active={tool === toolId}
-                    />
-                  ))}
-                </div>
-                {(tool === 'wall' || tool === 'darkness' || tool === 'calibrate') && (
-                  <>
-                    <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
-                      <IconTileButton icon="✅" label={tool === 'calibrate' ? 'Save Calibration' : 'Commit Draft'} onClick={finalizeDraft} tone="success" size="small" />
-                      <IconTileButton icon="🧹" label="Clear Draft" onClick={() => { setDraftPoints([]); setPointerPosition(null) }} tone="muted" size="small" />
-                    </div>
-                    <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                      {tool === 'calibrate' ? 'Calibration uses two points max.' : 'Click an existing point to snap-close the loop.'}
-                    </p>
-                  </>
-                )}
-                {tool === 'calibrate' && (
-                  <div style={{ marginTop: '0.5rem', display: 'grid', gap: '0.35rem' }}>
-                    <input
-                      type="number"
-                      min="1"
-                      value={calibrationFeet}
-                      onChange={(event) => setCalibrationFeet(event.target.value)}
-                      style={inputStyle}
-                      placeholder="Feet between 2 points (default 5)"
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Walls + Darkness</div>
-                <p style={{ margin: 0, color: '#8c8c8c', fontSize: '0.75rem' }}>
-                  Use `Select` tool, then click a wall or darkness zone to select.
-                </p>
-                <p style={{ margin: '0.25rem 0 0', color: '#8c8c8c', fontSize: '0.75rem' }}>
-                  Selected: {selectedStructure.kind ? `${selectedStructure.kind} (${selectedStructure.ids.length})` : 'none'}
-                </p>
-                <div style={{ marginTop: '0.4rem' }}>
-                  <IconTileButton icon="↩️" label="Undo Last Map Edit" onClick={undoMapEdit} disabled={!mapUndoStack.length} tone="primary" fullWidth />
-                </div>
-                <div style={{ marginTop: '0.35rem' }}>
-                  <IconTileButton icon="🗺️" label="Reset Map" onClick={resetMap} disabled={!activeMap} tone="danger" fullWidth />
-                </div>
-                <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                  Click and drag selected walls on the map to reposition. Press Delete/Backspace to remove selected walls or darkness.
-                </p>
-              </div>
-            </div>
-          )}
-        </section>
-        )}
-
-        {isDm && (
-        <section style={menuSectionStyle}>
-          <button type="button" onClick={() => toggleMenu('dungeonMaster')} style={menuToggleStyle}>
-            <span>Dungeon Master</span>
-            <span>{expandedMenus.dungeonMaster ? '▾' : '▸'}</span>
-          </button>
-          {expandedMenus.dungeonMaster && (
-            <div style={menuBodyStyle}>
-              <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(activeState?.fog?.enabled)}
-                  disabled={!activeMap}
-                  onChange={(event) => {
-                    callMutation('setFogEnabled', { enabled: event.target.checked }).catch((err) => setError(err.message))
-                  }}
-                />
-                Enable fog of war
-              </label>
-              <IconTileButton
-                icon="👁️"
-                label="Reset Player Vision"
-                onClick={() => {
-                  callMutation('resetFogExplored', {})
-                    .catch((err) => setError(err.message))
-                }}
-                disabled={!activeMap}
-                tone="muted"
-                fullWidth
-              />
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>DM Tools</div>
-                <div style={toolGridStyle}>
-                  {DM_TOOL_IDS.map((toolId) => (
-                    <IconTileButton
-                      key={toolId}
-                      icon={TOOL_ICONS[toolId]}
-                      label={TOOL_OPTIONS[toolId].label}
-                      onClick={() => selectTool(toolId)}
-                      active={tool === toolId}
-                    />
-                  ))}
-                </div>
-                {tool === 'darkness' && (
-                  <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
-                    <IconTileButton icon="✅" label="Commit Draft" onClick={finalizeDraft} tone="success" size="small" />
-                    <IconTileButton icon="🧹" label="Clear Draft" onClick={() => { setDraftPoints([]); setPointerPosition(null) }} tone="muted" size="small" />
-                  </div>
-                )}
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>NPC Token Setup</div>
-                <p style={{ margin: '0 0 0.35rem', color: '#777', fontSize: '0.75rem' }}>
-                  Use Add NPC Token tool, then click the map to place a generic NPC.
-                </p>
-                <div style={{ marginTop: '0.2rem', display: 'grid', gap: '0.35rem' }}>
-                  <input
-                    type="text"
-                    value={npcTokenDraft.name}
-                    onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, name: event.target.value }))}
-                    placeholder="NPC token name"
-                    style={inputStyle}
-                  />
-                  <select value={npcTokenDraft.size} onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, size: event.target.value }))} style={inputStyle}>
-                    <option value="small">Small</option>
-                    <option value="medium">Medium</option>
-                    <option value="large">Large</option>
-                  </select>
-                  <select value={npcTokenDraft.ringColor} onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, ringColor: event.target.value }))} style={inputStyle}>
-                    <option value="clear">Ring: Clear</option>
-                    <option value="white">Ring: White</option>
-                    <option value="black">Ring: Black</option>
-                    <option value="red">Ring: Red</option>
-                    <option value="blue">Ring: Blue</option>
-                  </select>
-                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(npcTokenDraft.darkvision)}
-                      onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, darkvision: event.target.checked }))}
-                    />
-                    NPC has dark vision
-                  </label>
-                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(npcTokenDraft.hidden)}
-                      onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, hidden: event.target.checked }))}
-                    />
-                    Hidden from players
-                  </label>
-                </div>
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Manage NPC Tokens</div>
-                <select value={selectedNpcTokenId} onChange={(event) => selectNpcToken(event.target.value)} style={inputStyle}>
-                  <option value="">Select NPC token</option>
-                  {npcTokens.map((token) => (
-                    <option key={token.id} value={token.id}>{token.name}</option>
-                  ))}
-                </select>
-                <div style={{ marginTop: '0.45rem' }}>
-                  <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" />
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-        )}
-
-        <section style={menuSectionStyle}>
-          <button type="button" onClick={() => toggleMenu('generalMapTools')} style={menuToggleStyle}>
-            <span>General Map Tools</span>
-            <span>{expandedMenus.generalMapTools ? '▾' : '▸'}</span>
-          </button>
-          {expandedMenus.generalMapTools && (
-            <div style={menuBodyStyle}>
-              <div style={toolGridStyle}>
-                {GENERAL_TOOL_IDS.map((toolId) => (
-                  <IconTileButton
-                    key={toolId}
-                    icon={TOOL_ICONS[toolId]}
-                    label={TOOL_OPTIONS[toolId].label}
-                    onClick={() => selectTool(toolId)}
-                    active={tool === toolId}
-                  />
-                ))}
-              </div>
-              {tool === 'shape' && (
-                <>
-                  <div style={subSectionStyle}>
-                    <div style={subSectionTitleStyle}>Shape Creation</div>
-                    <div style={{ marginBottom: '0.35rem' }}>
-                      <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
-                      <div style={toolGridStyle}>
-                        {SHAPE_TYPE_OPTIONS.map((shapeType) => (
-                          <IconTileButton
-                            key={shapeType.id}
-                            icon={shapeType.id === 'circle' ? '⚪' : shapeType.id === 'square' ? '⬜' : shapeType.id === 'triangle' ? '🔺' : '▭'}
-                            label={shapeType.label}
-                            onClick={() => setShapeDraftType(shapeType.id)}
-                            active={shapeDraftType === shapeType.id}
-                            size="small"
-                          />
-                        ))}
-                      </div>
-                    </div>
-                    <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                      Select Shape Tool, then click the map to place. New shapes default to blue.
-                    </p>
-                  </div>
-                  <select value={selectedShapeId} onChange={(event) => setSelectedShapeId(event.target.value)} style={{ ...inputStyle, marginTop: '0.45rem' }}>
-                    <option value="">Select shape</option>
-                    {(activeState?.shapes ?? []).map((shape) => (
-                      <option key={shape.id} value={shape.id}>
-                        {(shape.shapeType || shape.kind)} ({shape.id.slice(0, 6)})
-                      </option>
-                    ))}
-                  </select>
-                  {selectedShape && (
-                    <>
-                      {selectedShape.shapeType && (
-                        <>
-                          <select
-                            value={selectedShapeColor}
-                            onChange={(event) => {
-                              setSelectedShapeColor(event.target.value)
-                              updateShapeColor(selectedShape, event.target.value)
-                            }}
-                            style={{ ...inputStyle, marginTop: '0.4rem' }}
-                          >
-                            {SHAPE_COLOR_OPTIONS.map((entry) => (
-                              <option key={entry.id} value={entry.id}>{entry.label}</option>
-                            ))}
-                          </select>
-                        </>
-                      )}
-                      <div style={{ marginTop: '0.4rem' }}>
-                        <IconTileButton icon="🗑️" label="Remove Shape" onClick={removeShape} tone="danger" fullWidth />
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section style={menuSectionStyle}>
-          <button type="button" onClick={() => toggleMenu('player')} style={menuToggleStyle}>
-            <span>Player</span>
-            <span>{expandedMenus.player ? '▾' : '▸'}</span>
-          </button>
-          {expandedMenus.player && (
-            <div style={menuBodyStyle}>
-              {(!isDm || viewMode === 'player') && (
-                <div style={toolGridStyle}>
-                  {PLAYER_TOOL_IDS.map((toolId) => (
-                    <IconTileButton
-                      key={toolId}
-                      icon={TOOL_ICONS[toolId]}
-                      label={TOOL_OPTIONS[toolId].label}
-                      onClick={() => selectTool(toolId)}
-                      active={tool === toolId}
-                    />
-                  ))}
-                </div>
-              )}
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Focused View</div>
-                {isDm ? (
-                  <div style={{ display: 'grid', gap: '0.4rem', marginTop: '0.2rem' }}>
-                    <button
-                      type="button"
-                      onClick={() => selectFocusedPlayer('dm')}
-                      style={{
-                        ...focusPillStyle,
-                        width: '100%',
-                        minHeight: '44px',
-                        fontSize: '0.82rem',
-                        fontWeight: 700,
-                        background: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#2a4f82' : '#1a1a1a',
-                        borderColor: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#7caeff' : '#3a3a3a',
-                      }}
-                    >
-                      DM View
-                    </button>
-                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'nowrap' }}>
-                      {playerTokens.map((token) => (
-                        <button
-                          key={token.id}
-                          type="button"
-                          onClick={() => selectFocusedPlayer(token.id)}
-                          style={{
-                            ...focusPillStyle,
-                            flex: 1,
-                            minWidth: 0,
-                            background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
-                            borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
-                          }}
-                        >
-                          {token.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <select
-                    value={focusedPlayerTokenId}
-                    onChange={(event) => selectFocusedPlayer(event.target.value)}
-                    style={{ ...inputStyle, marginTop: '0.25rem' }}
-                  >
-                    <option value="">Select your character view</option>
-                    {playerTokens.map((token) => (
-                      <option key={token.id} value={token.id}>{token.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              {(!isDm || viewMode === 'player') && tool === 'path' && (
-                <div style={{ marginTop: '0.5rem', display: 'grid', gap: '0.3rem' }}>
-                  <div style={iconTileGridStyle}>
-                    <IconTileButton
-                      icon="📍"
-                      label="Start Path"
-                      onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])}
-                      tone="muted"
-                      size="small"
-                    />
-                    <IconTileButton
-                      icon="🏃"
-                      label="Animate Move"
-                      onClick={finalizePathMove}
-                      tone="success"
-                      size="small"
-                    />
-                    <IconTileButton
-                      icon="🧹"
-                      label="Clear Path"
-                      onClick={() => setPathPoints([])}
-                      tone="muted"
-                      size="small"
-                    />
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: '#888' }}>
-                    Used: {formatFeet(pathFeet)} ft | Remaining: {formatFeet(movementRemaining)} ft
-                  </div>
-                </div>
-              )}
-
-              {(!isDm || viewMode === 'player') && (
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Path + Movement</div>
-                <label style={labelStyle}>
-                  Move speed (ft)
-                  <input
-                    type="number"
-                    min="1"
-                    value={character.moveSpeed}
-                    onChange={(event) => setCharacter((prev) => ({ ...prev, moveSpeed: Number(event.target.value) || 30 }))}
-                    style={inputStyle}
-                  />
-                </label>
-                <IconTileButton icon="⚙️" label="Save Move Speed" onClick={saveCharacter} disabled={!activeMap} tone="primary" fullWidth />
-              </div>
-              )}
-            </div>
-          )}
-        </section>
-      </aside>
-
-      <section ref={containerRef} style={{ border: '1px solid #2d2d2d', borderRadius: '10px', background: '#111', padding: '0.6rem' }}>
         {sessionStatus === 'closed' && (
           <div style={{ marginBottom: '0.6rem', padding: '0.55rem 0.8rem', borderRadius: '6px', background: '#231818', border: '1px solid #4b2222', color: '#db9f9f', fontSize: '0.85rem' }}>
             {isDm ? 'Game is closed. Select a map and switch to DM Preparing to set up.' : 'Game is currently closed.'}
@@ -2613,6 +2670,43 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         {canRenderBoard && (
           <>
           <div style={{ position: 'relative', width: stageWidth, height: stageHeight, border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a', overflow: 'auto' }}>
+            <div style={menuCascadeContainerStyle}>
+              <div style={railStyle}>
+                {railMenuOptions.map((menu) => (
+                  <RailIconButton
+                    key={menu.id}
+                    icon={menu.icon}
+                    label={menu.label}
+                    active={activeRailMenu === menu.id}
+                    onClick={() => toggleRailMenu(menu.id)}
+                  />
+                ))}
+              </div>
+              {activeRailMenu && activeSubmenuOptions.length > 0 && (
+                <div style={railStyle}>
+                  {activeSubmenuOptions.map((submenu) => (
+                    <RailIconButton
+                      key={submenu.id}
+                      icon={submenu.icon}
+                      label={submenu.label}
+                      active={activeRailSubmenu === submenu.id}
+                      onClick={() => selectRailSubmenu(activeRailMenu, submenu.id)}
+                    />
+                  ))}
+                </div>
+              )}
+              {activeRailMenu && activeRailSubmenu && (
+                <div style={menuFlyoutStyle}>
+                  <div style={menuFlyoutHeaderStyle}>
+                    <span>{activeMenuLabel}</span>
+                    <span>{activeSubmenuLabel}</span>
+                  </div>
+                  <div style={menuFlyoutBodyStyle}>
+                    {renderRailContent()}
+                  </div>
+                </div>
+              )}
+            </div>
             <div style={zoomOverlayStyle}>
               <button type="button" onClick={zoomOut} style={zoomOverlayButtonStyle} title="Zoom Out">−</button>
               <button type="button" onClick={zoomIn} style={zoomOverlayButtonStyle} title="Zoom In">+</button>
@@ -3303,6 +3397,29 @@ function IconTileButton({
   )
 }
 
+function RailIconButton({
+  icon,
+  label,
+  onClick,
+  active = false,
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      style={{
+        ...railButtonStyle,
+        background: active ? '#9f1717' : railButtonStyle.background,
+        borderColor: active ? '#d84949' : railButtonStyle.borderColor,
+        color: active ? '#fff' : railButtonStyle.color,
+      }}
+    >
+      <span style={railButtonIconStyle}>{icon}</span>
+    </button>
+  )
+}
+
 function iconTileButtonStyle({ active, disabled, tone, size, fullWidth }) {
   const tones = {
     neutral: {
@@ -3394,39 +3511,6 @@ const labelStyle = {
   marginBottom: '0.45rem',
 }
 
-const menuSectionStyle = {
-  marginBottom: '0.65rem',
-  border: '1px solid #262626',
-  borderRadius: '8px',
-  overflow: 'hidden',
-}
-
-const menuToggleStyle = {
-  width: '100%',
-  background: '#191919',
-  border: 'none',
-  color: '#d6d6d6',
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '0.52rem 0.65rem',
-  fontSize: '0.79rem',
-  fontWeight: 600,
-  cursor: 'pointer',
-}
-
-const menuBodyStyle = {
-  padding: '0.55rem',
-  display: 'grid',
-  gap: '0.5rem',
-  background: '#131313',
-}
-
-const subSectionStyle = {
-  borderTop: '1px solid #252525',
-  paddingTop: '0.5rem',
-}
-
 const subSectionTitleStyle = {
   marginBottom: '0.35rem',
   fontSize: '0.74rem',
@@ -3475,10 +3559,82 @@ const toolGridStyle = {
   gap: '0.35rem',
 }
 
-const ringButtonRowStyle = {
+const topStatusBarStyle = {
+  marginBottom: '0.55rem',
   display: 'flex',
-  flexWrap: 'wrap',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  color: '#8a8a8a',
+  fontSize: '0.75rem',
+}
+
+const menuCascadeContainerStyle = {
+  position: 'absolute',
+  top: '52px',
+  left: '10px',
+  zIndex: 14,
+  display: 'flex',
+  alignItems: 'flex-start',
   gap: '0.35rem',
+}
+
+const railStyle = {
+  display: 'grid',
+  gap: '0.28rem',
+  padding: '0.32rem',
+  borderRadius: '14px',
+  background: 'rgba(12,12,12,0.7)',
+  border: '1px solid rgba(190,190,190,0.25)',
+  backdropFilter: 'blur(6px)',
+}
+
+const railButtonStyle = {
+  width: '36px',
+  height: '36px',
+  borderRadius: '10px',
+  border: '1px solid #4d4d4d',
+  background: '#1a1a1a',
+  color: '#e5e5e5',
+  display: 'grid',
+  placeItems: 'center',
+  cursor: 'pointer',
+  lineHeight: 1,
+}
+
+const railButtonIconStyle = {
+  fontSize: '1rem',
+  lineHeight: 1,
+}
+
+const menuFlyoutStyle = {
+  width: '320px',
+  maxHeight: 'calc(100vh - 260px)',
+  display: 'grid',
+  gridTemplateRows: 'auto 1fr',
+  borderRadius: '14px',
+  background: 'rgba(12,12,12,0.78)',
+  border: '1px solid rgba(190,190,190,0.25)',
+  backdropFilter: 'blur(6px)',
+  overflow: 'hidden',
+}
+
+const menuFlyoutHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: '0.6rem',
+  padding: '0.45rem 0.55rem',
+  background: 'rgba(27,27,27,0.95)',
+  color: '#dedede',
+  fontSize: '0.74rem',
+  fontWeight: 600,
+}
+
+const menuFlyoutBodyStyle = {
+  display: 'grid',
+  gap: '0.45rem',
+  padding: '0.55rem',
+  overflowY: 'auto',
 }
 
 const focusPillStyle = {
