@@ -564,37 +564,6 @@ function darknessComponentFromId(darknessZones, startId) {
   return exists ? [startId] : []
 }
 
-function interpolatePointAlongPath(points, progress) {
-  if (!points?.length) return null
-  if (points.length === 1) return points[0]
-  const clamped = clamp(progress, 0, 1)
-
-  const segments = []
-  let total = 0
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const start = points[i]
-    const end = points[i + 1]
-    const length = distancePx(start, end)
-    segments.push({ start, end, length })
-    total += length
-  }
-  if (total <= 0) return points.at(-1)
-
-  let target = total * clamped
-  for (const segment of segments) {
-    if (target <= segment.length) {
-      const t = segment.length <= 0 ? 1 : target / segment.length
-      return {
-        x: segment.start.x + (segment.end.x - segment.start.x) * t,
-        y: segment.start.y + (segment.end.y - segment.start.y) * t,
-      }
-    }
-    target -= segment.length
-  }
-
-  return points.at(-1)
-}
-
 function getMapPointerFromEvent(event, zoom = 1) {
   const pointer = event.target.getStage()?.getPointerPosition()
   if (!pointer) return null
@@ -643,7 +612,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [selectedShapeColor, setSelectedShapeColor] = useState('blue')
   const [selectedTokenId, setSelectedTokenId] = useState('')
   const [focusedPlayerTokenId, setFocusedPlayerTokenId] = useState(isDm ? 'dm' : '')
-  const [partyCharacters, setPartyCharacters] = useState([])
   const [selectedNpcTokenId, setSelectedNpcTokenId] = useState('')
   const [tokenDraft, setTokenDraft] = useState({ name: 'Token', size: 'medium', ringColor: 'clear', darkvision: false })
   const [npcTokenDraft, setNpcTokenDraft] = useState({ name: 'NPC', size: 'medium', ringColor: 'red', darkvision: false, hidden: false })
@@ -653,7 +621,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [mapRenderError, setMapRenderError] = useState('')
   const [pingClock, setPingClock] = useState(Date.now())
   const [shapePreview, setShapePreview] = useState(null)
-  const [lastKnownNpcByViewer, setLastKnownNpcByViewer] = useState({})
   const [expandedMenus, setExpandedMenus] = useState({
     mapSetup: true,
     dungeonMaster: true,
@@ -666,8 +633,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const [stageHeight, setStageHeight] = useState(720)
   const exploredSyncRef = useRef('')
   const rotateDragRef = useRef(null)
-  const previousNpcHiddenRef = useRef({})
-  const pathAnimatingRef = useRef(false)
 
   const refresh = useCallback(async (customClientId = clientId) => {
     const query = new URLSearchParams()
@@ -720,7 +685,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         if (charactersRes.ok) {
           const charactersJson = await charactersRes.json()
           const nextCharacters = Array.isArray(charactersJson) ? charactersJson : []
-          setPartyCharacters(nextCharacters)
 
           if (nextCharacters.length) {
             const firstName = nextCharacters[0].name
@@ -794,13 +758,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   }, [bundle?.activeState?.tokens, isDm])
 
   useEffect(() => {
-    if (isDm && viewMode !== 'dm') {
-      setViewMode('dm')
-    }
     if (isPlayer && viewMode !== 'player') {
       setViewMode('player')
     }
-  }, [isDm, isPlayer, viewMode])
+  }, [isPlayer, viewMode])
 
   useEffect(() => {
     setDraftPoints([])
@@ -812,7 +773,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     setSelectedShapeId('')
     setMapUndoStack([])
     setMapZoom(1)
-    setLastKnownNpcByViewer({})
   }, [bundle?.activeMap?.id])
 
   useEffect(() => {
@@ -998,12 +958,48 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   }, [activeState?.darknessZones, activeState?.walls, barrierShapes, selectedStructure.ids, selectedStructure.kind])
 
   const visibility = useMemo(() => {
-    if (!activeMap || !activeState || !visionToken) return null
+    if (!activeMap || !activeState) return null
 
-    const darkvisionEnabled = viewMode === 'player'
-      ? Boolean(visionToken.darkvision)
-      : Boolean(character.darkvision)
+    // DM view: show areas visible by at least one player token.
+    if (isDm && viewMode === 'dm') {
+      const playerVisionTokens = (activeState.tokens ?? []).filter((token) => token.role === 'player')
+      if (!playerVisionTokens.length) {
+        return computeVisibilityGrid({
+          state: activeState,
+          mapWidth: activeMap.width,
+          mapHeight: activeMap.height,
+          token: null,
+          darkvision: false,
+          feetPerPixel: feetPerPx,
+        })
+      }
 
+      const grids = playerVisionTokens.map((token) => computeVisibilityGrid({
+        state: activeState,
+        mapWidth: activeMap.width,
+        mapHeight: activeMap.height,
+        token,
+        darkvision: Boolean(token.darkvision),
+        feetPerPixel: feetPerPx,
+      }))
+
+      const base = grids[0]
+      const visibleSet = new Set()
+      for (const grid of grids) {
+        for (const cell of grid.visible) {
+          visibleSet.add(cell)
+        }
+      }
+      return {
+        cols: base.cols,
+        rows: base.rows,
+        gridSize: base.gridSize,
+        visible: Array.from(visibleSet),
+      }
+    }
+
+    if (!visionToken) return null
+    const darkvisionEnabled = Boolean(visionToken.darkvision)
     return computeVisibilityGrid({
       state: activeState,
       mapWidth: activeMap.width,
@@ -1012,7 +1008,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       darkvision: darkvisionEnabled,
       feetPerPixel: feetPerPx,
     })
-  }, [activeMap, activeState, character.darkvision, feetPerPx, viewMode, visionToken])
+  }, [activeMap, activeState, feetPerPx, isDm, viewMode, visionToken])
 
   const pathFeet = useMemo(() => computePathDistanceFeet(pathPoints, feetPerPx), [pathPoints, feetPerPx])
   const movementRemaining = Number(character.moveSpeed) - pathFeet
@@ -1069,7 +1065,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   useEffect(() => {
     if (!activeMap || !activeState?.fog?.enabled || !visibility) return
     if (!visibility.visible.length) return
-    if (pathAnimatingRef.current) return
 
     const payload = {
       mapId: activeMap.id,
@@ -1483,60 +1478,16 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!selectedToken || pathPoints.length < 2) return
     if (isPlayer && selectedToken.role !== 'player') return
 
-    const tokenId = selectedToken.id
-    const route = pathPoints.map((point) => ({ x: point.x, y: point.y }))
     const destination = pathPoints[pathPoints.length - 1]
-
-    pathAnimatingRef.current = true
     try {
-      const totalPx = route.slice(1).reduce((sum, point, index) => (
-        sum + distancePx(route[index], point)
-      ), 0)
-      const durationMs = clamp(Math.round(totalPx * 7), 350, 3000)
-      const startTime = performance.now()
-
-      await new Promise((resolve) => {
-        const tick = (now) => {
-          const elapsed = now - startTime
-          const progress = clamp(elapsed / durationMs, 0, 1)
-          const nextPoint = interpolatePointAlongPath(route, progress)
-          if (nextPoint) {
-            setBundle((prev) => {
-              if (!prev?.activeState) return prev
-              return {
-                ...prev,
-                activeState: {
-                  ...prev.activeState,
-                  tokens: (prev.activeState.tokens ?? []).map((token) => (
-                    token.id === tokenId
-                      ? { ...token, x: nextPoint.x, y: nextPoint.y }
-                      : token
-                  )),
-                },
-              }
-            })
-          }
-
-          if (progress < 1) {
-            requestAnimationFrame(tick)
-            return
-          }
-          resolve()
-        }
-
-        requestAnimationFrame(tick)
-      })
-
       await callMutation('updateToken', {
-        id: tokenId,
+        id: selectedToken.id,
         x: destination.x,
         y: destination.y,
       })
       setPathPoints([])
     } catch (err) {
       setError(err.message)
-    } finally {
-      pathAnimatingRef.current = false
     }
   }, [callMutation, isPlayer, pathPoints, selectedToken])
 
@@ -1648,7 +1599,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       setShapePreview(null)
       setFocusedPlayerTokenId(isDm ? 'dm' : '')
       setViewMode(isDm ? 'dm' : 'player')
-      setLastKnownNpcByViewer({})
     } catch (err) {
       setError(err.message)
     }
@@ -1696,18 +1646,8 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!selectedNpcTokenId) return
     if (!isDm) return
     try {
-      const removedId = selectedNpcTokenId
       await callMutation('removeToken', { id: selectedNpcTokenId })
       setSelectedNpcTokenId('')
-      setLastKnownNpcByViewer((prev) => {
-        const next = {}
-        for (const [viewerId, memory] of Object.entries(prev)) {
-          const copy = { ...(memory ?? {}) }
-          delete copy[removedId]
-          next[viewerId] = copy
-        }
-        return next
-      })
     } catch (err) {
       setError(err.message)
     }
@@ -1762,11 +1702,14 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     setFocusedPlayerTokenId(value)
     if (value === 'dm') {
       setViewMode('dm')
+      setSelectedTokenId('')
+      setSelectedNpcTokenId('')
       return
     }
 
     setViewMode('player')
     setSelectedTokenId(value)
+    setSelectedNpcTokenId('')
   }, [isPlayer])
 
   const selectNpcToken = useCallback((tokenId) => {
@@ -1780,35 +1723,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       ringColor: token.ringColor || 'red',
       darkvision: Boolean(token.darkvision),
       hidden: Boolean(token.hidden),
-    })
-  }, [npcTokens])
-
-  useEffect(() => {
-    const previous = previousNpcHiddenRef.current
-    const next = {}
-    const unhiddenNpcIds = []
-
-    for (const token of npcTokens) {
-      const hidden = Boolean(token.hidden)
-      next[token.id] = hidden
-      if (previous[token.id] && !hidden) {
-        unhiddenNpcIds.push(token.id)
-      }
-    }
-
-    previousNpcHiddenRef.current = next
-
-    if (!unhiddenNpcIds.length) return
-    setLastKnownNpcByViewer((prev) => {
-      const updated = {}
-      for (const [viewerId, memory] of Object.entries(prev)) {
-        const copy = { ...(memory ?? {}) }
-        for (const tokenId of unhiddenNpcIds) {
-          delete copy[tokenId]
-        }
-        updated[viewerId] = copy
-      }
-      return updated
     })
   }, [npcTokens])
 
@@ -1830,38 +1744,42 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     const visibleSet = new Set(visibility.visible ?? [])
     const exploredSet = new Set(activeState.fog?.exploredCells ?? [])
-    const visibleRects = []
-    const exploredRects = []
+    const fogRects = []
     const gridSize = visibility.gridSize
 
     for (let row = 0; row < visibility.rows; row += 1) {
       for (let col = 0; col < visibility.cols; col += 1) {
         const index = row * visibility.cols + col
-        const rect = {
+        if (visibleSet.has(index)) continue
+        const seen = exploredSet.has(index)
+        fogRects.push({
           x: col * gridSize,
           y: row * gridSize,
           width: gridSize,
           height: gridSize,
-        }
-        if (visibleSet.has(index)) {
-          visibleRects.push(rect)
-          continue
-        }
-        if (exploredSet.has(index)) {
-          exploredRects.push(rect)
-        }
+          seen,
+        })
+      }
+    }
+
+    if (isDm && viewMode === 'dm') {
+      return {
+        fogRects,
+        unseenFill: 'rgba(0,0,0,0.32)',
+        exploredFill: 'rgba(0,0,0,0.32)',
+        unseenBlur: 18,
+        exploredBlur: 6,
       }
     }
 
     return {
-      visibleRects,
-      exploredRects,
-      unseenFill: viewMode === 'dm' ? 'rgba(0,0,0,0.56)' : 'rgba(0,0,0,0.78)',
-      exploredFill: viewMode === 'dm' ? 'rgba(0,0,0,0.30)' : 'rgba(0,0,0,0.58)',
-      cutoutRadius: Math.max(3, gridSize * 0.55),
-      cutoutBlur: viewMode === 'player' ? 70 : 45,
+      fogRects,
+      unseenFill: 'rgba(0,0,0,0.58)',
+      exploredFill: 'rgba(0,0,0,0.78)',
+      unseenBlur: 42,
+      exploredBlur: 10,
     }
-  }, [activeState?.fog, viewMode, visibility])
+  }, [activeState?.fog, isDm, viewMode, visibility])
 
   const visibleTokenIds = useMemo(() => {
     if (!activeState?.tokens?.length) return new Set()
@@ -1903,43 +1821,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }
     return ids
   }, [activeState?.tokens, isPlayer, visibleTokenIds])
-
-  useEffect(() => {
-    if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return
-    const visibleNpcs = npcTokens.filter((token) => !token.hidden && renderTokenIds.has(token.id))
-    if (!visibleNpcs.length) return
-
-    setLastKnownNpcByViewer((prev) => {
-      const existing = prev[visionToken.id] ?? {}
-      let changed = false
-      const nextViewerState = { ...existing }
-
-      for (const token of visibleNpcs) {
-        const current = existing[token.id]
-        if (!current || current.x !== token.x || current.y !== token.y || current.name !== token.name || current.size !== token.size || current.ringColor !== token.ringColor) {
-          nextViewerState[token.id] = {
-            id: token.id,
-            x: token.x,
-            y: token.y,
-            name: token.name,
-            size: token.size,
-            ringColor: token.ringColor,
-          }
-          changed = true
-        }
-      }
-
-      if (!changed) return prev
-      return { ...prev, [visionToken.id]: nextViewerState }
-    })
-  }, [focusedPlayerTokenId, npcTokens, renderTokenIds, viewMode, visionToken?.id])
-
-  const ghostNpcTokens = useMemo(() => {
-    if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return []
-    const viewerMemory = lastKnownNpcByViewer[visionToken.id] ?? {}
-    const liveNpcIds = new Set(npcTokens.map((token) => token.id))
-    return Object.values(viewerMemory).filter((token) => liveNpcIds.has(token.id) && !renderTokenIds.has(token.id))
-  }, [focusedPlayerTokenId, lastKnownNpcByViewer, npcTokens, renderTokenIds, viewMode, visionToken?.id])
 
   const draftSnapPoint = useMemo(() => {
     if ((tool !== 'wall' && tool !== 'darkness') || !pointerPosition || draftPoints.length < 2) return null
@@ -2069,19 +1950,22 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                   icon="🧰"
                   label="DM Preparing"
                   onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'preparing' }).catch((err) => setError(err.message))}
-                  tone={sessionStatus === 'preparing' ? 'success' : 'neutral'}
+                  tone="neutral"
+                  active={sessionStatus === 'preparing'}
                 />
                 <IconTileButton
                   icon="▶️"
                   label="Active"
                   onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'active' }).catch((err) => setError(err.message))}
-                  tone="success"
+                  tone="neutral"
+                  active={sessionStatus === 'active'}
                 />
                 <IconTileButton
                   icon="⏹️"
                   label="Closed"
                   onClick={() => stopSession().catch((err) => setError(err.message))}
-                  tone="danger"
+                  tone="neutral"
+                  active={sessionStatus === 'closed'}
                 />
               </div>
               <p style={{ margin: 0, color: sessionStatus === 'active' ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
@@ -2214,7 +2098,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 label="Reset Player Vision"
                 onClick={() => {
                   callMutation('resetFogExplored', {})
-                    .then(() => setLastKnownNpcByViewer({}))
                     .catch((err) => setError(err.message))
                 }}
                 disabled={!activeMap}
@@ -2420,28 +2303,46 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Focused View</div>
-                {isDm && (
-                <IconTileButton
-                  icon="🛡️"
-                  label="Dungeon Master View"
-                  onClick={() => selectFocusedPlayer('dm')}
-                  active={focusedPlayerTokenId === 'dm' || viewMode === 'dm'}
-                  size="large"
-                  fullWidth
-                />
+                {isDm ? (
+                  <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.2rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => selectFocusedPlayer('dm')}
+                      style={{
+                        ...focusPillStyle,
+                        background: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#2a4f82' : '#1a1a1a',
+                        borderColor: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#7caeff' : '#3a3a3a',
+                      }}
+                    >
+                      DM View
+                    </button>
+                    {playerTokens.map((token) => (
+                      <button
+                        key={token.id}
+                        type="button"
+                        onClick={() => selectFocusedPlayer(token.id)}
+                        style={{
+                          ...focusPillStyle,
+                          background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
+                          borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
+                        }}
+                      >
+                        {token.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <select
+                    value={focusedPlayerTokenId}
+                    onChange={(event) => selectFocusedPlayer(event.target.value)}
+                    style={{ ...inputStyle, marginTop: '0.25rem' }}
+                  >
+                    <option value="">Select your character view</option>
+                    {playerTokens.map((token) => (
+                      <option key={token.id} value={token.id}>{token.name}</option>
+                    ))}
+                  </select>
                 )}
-                <div style={{ ...toolGridStyle, marginTop: '0.35rem' }}>
-                  {playerTokens.map((token) => (
-                    <IconTileButton
-                      key={token.id}
-                      icon="🧙"
-                      label={token.name}
-                      onClick={() => selectFocusedPlayer(token.id)}
-                      active={focusedPlayerTokenId === token.id && viewMode === 'player'}
-                      size="small"
-                    />
-                  ))}
-                </div>
               </div>
 
               {tool === 'path' && (
@@ -3003,45 +2904,32 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
               ))}
 
               {measurementDistance && (
-                <Text
-                  x={measurementDistance.mid.x + 6}
-                  y={measurementDistance.mid.y - 16}
-                  text={measurementDistance.feet ? `${formatFeet(measurementDistance.feet)} ft` : `${Math.round(measurementDistance.px)} px`}
-                  fontSize={12}
-                  fill="#c9f6f4"
-                  listening={false}
-                />
+                <>
+                  <Rect
+                    x={measurementDistance.mid.x + 2}
+                    y={measurementDistance.mid.y - 18}
+                    width={Math.max(48, (`${formatFeet(measurementDistance.feet || 0)} ft`.length * 7) + 10)}
+                    height={18}
+                    fill="rgba(8,8,10,0.82)"
+                    stroke="rgba(245,245,245,0.22)"
+                    strokeWidth={1}
+                    cornerRadius={4}
+                    listening={false}
+                  />
+                  <Text
+                    x={measurementDistance.mid.x + 6}
+                    y={measurementDistance.mid.y - 16}
+                    text={`${formatFeet(measurementDistance.feet || 0)} ft`}
+                    fontSize={12}
+                    fontStyle="bold"
+                    fill="#f5f7ff"
+                    listening={false}
+                  />
+                </>
               )}
             </Layer>
 
             <Layer>
-              {ghostNpcTokens.map((token) => (
-                <Circle
-                  key={`ghost:${token.id}`}
-                  x={token.x}
-                  y={token.y}
-                  radius={TOKEN_RADIUS[token.size] ?? TOKEN_RADIUS.medium}
-                  fill="rgba(166,166,166,0.35)"
-                  stroke={RING_COLORS[token.ringColor] ?? 'rgba(255,255,255,0.25)'}
-                  strokeWidth={3}
-                  listening={false}
-                />
-              ))}
-
-              {ghostNpcTokens.map((token) => (
-                <Text
-                  key={`ghost-label:${token.id}`}
-                  x={token.x - 40}
-                  y={token.y - 31}
-                  width={80}
-                  align="center"
-                  text={token.name}
-                  fontSize={10}
-                  fill="rgba(230,230,230,0.45)"
-                  listening={false}
-                />
-              ))}
-
               {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
                 <Circle
                   key={token.id}
@@ -3073,18 +2961,58 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 />
               ))}
 
-              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
+              {(activeState?.tokens ?? []).filter((token) => isDm && token.role === 'npc' && token.hidden && renderTokenIds.has(token.id)).map((token) => (
                 <Text
-                  key={`${token.id}:label`}
-                  x={token.x - 30}
-                  y={token.y - 33}
-                  width={60}
-                  align="center"
-                  text={token.name}
-                  fontSize={11}
-                  fill="#e7e7e7"
+                  key={`${token.id}:hidden-eye`}
+                  x={token.x + 12}
+                  y={token.y - 8}
+                  text="👁️"
+                  fontSize={12}
                   listening={false}
                 />
+              ))}
+
+              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
+                (() => {
+                  const label = token.name || 'Token'
+                  const width = Math.max(54, (label.length * 7) + 10)
+                  const x = token.x - (width / 2)
+                  const y = token.y - 35
+                  const renameNpc = () => {
+                    if (!isDm || token.role !== 'npc') return
+                    const nextName = window.prompt('Rename NPC token', token.name || 'NPC')
+                    if (!nextName || !nextName.trim() || nextName.trim() === token.name) return
+                    callMutation('updateToken', { id: token.id, name: nextName.trim(), role: 'npc' }).catch((err) => setError(err.message))
+                  }
+                  return (
+                    <>
+                      <Rect
+                        key={`${token.id}:label:bg`}
+                        x={x}
+                        y={y}
+                        width={width}
+                        height={18}
+                        fill="rgba(8,8,10,0.82)"
+                        stroke="rgba(245,245,245,0.22)"
+                        strokeWidth={1}
+                        cornerRadius={4}
+                        onDblClick={renameNpc}
+                      />
+                      <Text
+                        key={`${token.id}:label`}
+                        x={x + 5}
+                        y={y + 2}
+                        width={width - 10}
+                        align="center"
+                        text={label}
+                        fontSize={11}
+                        fontStyle="bold"
+                        fill="#f5f7ff"
+                        onDblClick={renameNpc}
+                      />
+                    </>
+                  )
+                })()
               ))}
 
             </Layer>
@@ -3092,35 +3020,16 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
             <Layer listening={false}>
               {fogRenderData && (
                 <>
-                  <Rect
-                    x={0}
-                    y={0}
-                    width={activeMap.width}
-                    height={activeMap.height}
-                    fill={fogRenderData.unseenFill}
-                  />
-                  {fogRenderData.exploredRects.map((rect, index) => (
+                  {fogRenderData.fogRects.map((rect, index) => (
                     <Rect
-                      key={`fog:explored:${rect.x}:${rect.y}:${index}`}
+                      key={`fog:${rect.x}:${rect.y}:${index}`}
                       x={rect.x}
                       y={rect.y}
                       width={rect.width}
                       height={rect.height}
-                      fill={fogRenderData.exploredFill}
-                    />
-                  ))}
-                  {fogRenderData.visibleRects.map((rect, index) => (
-                    <Rect
-                      key={`fog:visible:${rect.x}:${rect.y}:${index}`}
-                      x={rect.x}
-                      y={rect.y}
-                      width={rect.width}
-                      height={rect.height}
-                      cornerRadius={fogRenderData.cutoutRadius}
-                      fill="rgba(0,0,0,1)"
-                      globalCompositeOperation="destination-out"
+                      fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
                       shadowColor="rgba(0,0,0,0.95)"
-                      shadowBlur={fogRenderData.cutoutBlur}
+                      shadowBlur={rect.seen ? fogRenderData.exploredBlur : fogRenderData.unseenBlur}
                     />
                   ))}
                 </>
