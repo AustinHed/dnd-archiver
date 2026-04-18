@@ -152,6 +152,13 @@ function pointAlongPath(points = [], targetDistance = 0) {
   return { ...points[points.length - 1] }
 }
 
+function preferredPlayerTokenId(tokens = []) {
+  const players = (tokens ?? []).filter((token) => token.role === 'player')
+  if (!players.length) return ''
+  const aren = players.find((token) => String(token.name || '').trim().toLowerCase() === 'aren')
+  return aren?.id ?? players[0].id
+}
+
 function getBounds(points = []) {
   if (!points.length) return null
   const xs = points.map((point) => point.x)
@@ -784,12 +791,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         const nextBundle = await refresh(clientId)
         if (!mounted) return
 
-        const firstPlayerId = nextBundle?.activeState?.tokens?.find((token) => token.role === 'player')?.id ?? ''
+        const firstPlayerId = preferredPlayerTokenId(nextBundle?.activeState?.tokens ?? [])
         const firstTokenId = isPlayer
           ? firstPlayerId
           : (firstPlayerId || (nextBundle?.activeState?.tokens?.[0]?.id ?? ''))
         setSelectedTokenId((prev) => prev || firstTokenId)
-        setFocusedPlayerTokenId((prev) => (prev === 'dm' ? prev : (prev || firstPlayerId || 'dm')))
+        setFocusedPlayerTokenId((prev) => {
+          if (isPlayer) return prev || firstPlayerId || ''
+          return prev === 'dm' ? prev : (prev || firstPlayerId || 'dm')
+        })
       } catch (err) {
         if (!mounted) return
         setError(err.message)
@@ -813,10 +823,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       return
     }
 
-    const firstPlayer = tokens.find((token) => token.role === 'player')
+    const firstPlayerId = preferredPlayerTokenId(tokens)
+    const firstPlayer = tokens.find((token) => token.id === firstPlayerId)
     setSelectedTokenId((prev) => prev || firstPlayer?.id || (isDm ? tokens[0].id : ''))
 
     setFocusedPlayerTokenId((prev) => {
+      if (isPlayer) {
+        if (prev && tokens.some((token) => token.id === prev && token.role === 'player')) return prev
+        return firstPlayer?.id || ''
+      }
       if (prev === 'dm') return 'dm'
       if (prev && tokens.some((token) => token.id === prev && token.role === 'player')) return prev
       return firstPlayer?.id || (isDm ? 'dm' : '')
@@ -826,7 +841,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       if (prev && tokens.some((token) => token.id === prev && token.role === 'npc')) return prev
       return tokens.find((token) => token.role === 'npc')?.id ?? ''
     })
-  }, [bundle?.activeState?.tokens, isDm])
+  }, [bundle?.activeState?.tokens, isDm, isPlayer])
 
   useEffect(() => {
     if (isPlayer && viewMode !== 'player') {
@@ -1158,6 +1173,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
   useEffect(() => {
     if (!activeMap || !activeState?.fog?.enabled || !visibility) return
+    if (isDm || viewMode !== 'player' || visionToken?.role !== 'player') return
     if (!visibility.visible.length) return
 
     const payload = {
@@ -1165,6 +1181,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
       op: 'mergeFogExplored',
       actorId: clientId,
       payload: {
+        tokenId: visionToken.id,
         exploredCells: visibility.visible,
         cols: visibility.cols,
         rows: visibility.rows,
@@ -1183,7 +1200,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }).catch((err) => {
       console.error('Failed to merge explored cells', err)
     })
-  }, [activeMap, activeState?.fog?.enabled, clientId, visibility])
+  }, [activeMap, activeState?.fog?.enabled, clientId, isDm, viewMode, visibility, visionToken?.id, visionToken?.role])
 
   const callMutation = useCallback(async (op, payload) => {
     if (!activeMap) return null
@@ -1774,23 +1791,36 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     }
   }, [callMutation, mapUndoStack])
 
-  const updateNpcToken = useCallback(async () => {
-    if (!selectedNpcTokenId) return
-    if (!isDm) return
-    try {
-      await callMutation('updateToken', {
+  useEffect(() => {
+    if (!isDm || !selectedNpcTokenId) return
+    const token = npcTokens.find((entry) => entry.id === selectedNpcTokenId)
+    if (!token) return
+
+    const trimmedDraftName = String(npcTokenDraft.name || '').trim()
+    const draftName = trimmedDraftName || token.name || 'NPC'
+    const changed = (
+      draftName !== (token.name || 'NPC')
+      || npcTokenDraft.size !== (token.size || 'medium')
+      || npcTokenDraft.ringColor !== (token.ringColor || 'red')
+      || Boolean(npcTokenDraft.darkvision) !== Boolean(token.darkvision)
+      || Boolean(npcTokenDraft.hidden) !== Boolean(token.hidden)
+    )
+    if (!changed) return
+
+    const timer = window.setTimeout(() => {
+      callMutation('updateToken', {
         id: selectedNpcTokenId,
-        name: npcTokenDraft.name,
+        name: draftName,
         size: npcTokenDraft.size,
         ringColor: npcTokenDraft.ringColor,
         darkvision: Boolean(npcTokenDraft.darkvision),
         hidden: Boolean(npcTokenDraft.hidden),
         role: 'npc',
-      })
-    } catch (err) {
-      setError(err.message)
-    }
-  }, [callMutation, isDm, npcTokenDraft.darkvision, npcTokenDraft.hidden, npcTokenDraft.name, npcTokenDraft.ringColor, npcTokenDraft.size, selectedNpcTokenId])
+      }).catch((err) => setError(err.message))
+    }, 160)
+
+    return () => window.clearTimeout(timer)
+  }, [callMutation, isDm, npcTokenDraft.darkvision, npcTokenDraft.hidden, npcTokenDraft.name, npcTokenDraft.ringColor, npcTokenDraft.size, npcTokens, selectedNpcTokenId])
 
   const deleteNpcToken = useCallback(async () => {
     if (!selectedNpcTokenId) return
@@ -1893,7 +1923,10 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!activeState?.fog?.enabled || !visibility) return null
 
     const visibleSet = new Set(visibility.visible ?? [])
-    const exploredSet = new Set(activeState.fog?.exploredCells ?? [])
+    const exploredByToken = activeState.fog?.exploredByToken ?? {}
+    const tokenExplored = visionToken?.id ? exploredByToken[visionToken.id] : null
+    const fallbackExplored = activeState.fog?.exploredCells ?? []
+    const exploredSet = new Set(Array.isArray(tokenExplored) ? tokenExplored : fallbackExplored)
     const fogRects = []
     const gridSize = visibility.gridSize
 
@@ -1934,12 +1967,12 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     return {
       fogRects,
-      unseenFill: 'rgba(0,0,0,0.84)',
+      unseenFill: 'rgba(0,0,0,0.74)',
       exploredFill: 'rgba(0,0,0,0.38)',
-      unseenBlur: 22,
-      exploredBlur: 0,
+      unseenBlur: 56,
+      exploredBlur: 12,
     }
-  }, [activeState?.fog, isDm, viewMode, visibility])
+  }, [activeState?.fog, isDm, viewMode, visibility, visionToken?.id])
 
   const visibleTokenIds = useMemo(() => {
     if (!activeState?.tokens?.length) return new Set()
@@ -2337,8 +2370,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     <option key={token.id} value={token.id}>{token.name}</option>
                   ))}
                 </select>
-                <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
-                  <IconTileButton icon="💾" label="Update NPC" onClick={updateNpcToken} disabled={!selectedNpcTokenId} tone="primary" />
+                <div style={{ marginTop: '0.45rem' }}>
                   <IconTileButton icon="🗑️" label="Delete NPC" onClick={deleteNpcToken} disabled={!selectedNpcTokenId} tone="danger" />
                 </div>
               </div>
@@ -2433,47 +2465,57 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
           </button>
           {expandedMenus.player && (
             <div style={menuBodyStyle}>
-              <div style={toolGridStyle}>
-                {PLAYER_TOOL_IDS.map((toolId) => (
-                  <IconTileButton
-                    key={toolId}
-                    icon={TOOL_ICONS[toolId]}
-                    label={TOOL_OPTIONS[toolId].label}
-                    onClick={() => selectTool(toolId)}
-                    active={tool === toolId}
-                  />
-                ))}
-              </div>
+              {(!isDm || viewMode === 'player') && (
+                <div style={toolGridStyle}>
+                  {PLAYER_TOOL_IDS.map((toolId) => (
+                    <IconTileButton
+                      key={toolId}
+                      icon={TOOL_ICONS[toolId]}
+                      label={TOOL_OPTIONS[toolId].label}
+                      onClick={() => selectTool(toolId)}
+                      active={tool === toolId}
+                    />
+                  ))}
+                </div>
+              )}
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Focused View</div>
                 {isDm ? (
-                  <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.2rem' }}>
+                  <div style={{ display: 'grid', gap: '0.4rem', marginTop: '0.2rem' }}>
                     <button
                       type="button"
                       onClick={() => selectFocusedPlayer('dm')}
                       style={{
                         ...focusPillStyle,
+                        width: '100%',
+                        minHeight: '44px',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
                         background: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#2a4f82' : '#1a1a1a',
                         borderColor: (focusedPlayerTokenId === 'dm' || viewMode === 'dm') ? '#7caeff' : '#3a3a3a',
                       }}
                     >
                       DM View
                     </button>
-                    {playerTokens.map((token) => (
-                      <button
-                        key={token.id}
-                        type="button"
-                        onClick={() => selectFocusedPlayer(token.id)}
-                        style={{
-                          ...focusPillStyle,
-                          background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
-                          borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
-                        }}
-                      >
-                        {token.name}
-                      </button>
-                    ))}
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'nowrap' }}>
+                      {playerTokens.map((token) => (
+                        <button
+                          key={token.id}
+                          type="button"
+                          onClick={() => selectFocusedPlayer(token.id)}
+                          style={{
+                            ...focusPillStyle,
+                            flex: 1,
+                            minWidth: 0,
+                            background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
+                            borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
+                          }}
+                        >
+                          {token.name}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 ) : (
                   <select
@@ -2489,7 +2531,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 )}
               </div>
 
-              {tool === 'path' && (
+              {(!isDm || viewMode === 'player') && tool === 'path' && (
                 <div style={{ marginTop: '0.5rem', display: 'grid', gap: '0.3rem' }}>
                   <div style={iconTileGridStyle}>
                     <IconTileButton
@@ -2520,6 +2562,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 </div>
               )}
 
+              {(!isDm || viewMode === 'player') && (
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Path + Movement</div>
                 <label style={labelStyle}>
@@ -2534,6 +2577,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                 </label>
                 <IconTileButton icon="⚙️" label="Save Move Speed" onClick={saveCharacter} disabled={!activeMap} tone="primary" fullWidth />
               </div>
+              )}
             </div>
           )}
         </section>
@@ -3207,7 +3251,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       width={rect.width}
                       height={rect.height}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
-                      shadowColor={rect.seen ? 'transparent' : 'rgba(0,0,0,0.95)'}
+                      shadowColor={rect.seen ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.95)'}
                       shadowBlur={rect.seen ? (fogRenderData.exploredBlur || 0) : (fogRenderData.unseenBlur || 0)}
                     />
                   ))}

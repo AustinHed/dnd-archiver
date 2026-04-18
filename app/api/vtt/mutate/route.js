@@ -34,7 +34,7 @@ function isFiniteNumber(value) {
 }
 
 function isProtectedShape(shape) {
-  return shape?.kind === 'barrier' || shape?.kind === 'darkness'
+  return shape?.kind === 'barrier'
 }
 
 function validatePlayerMutation({ op, payload, currentState }) {
@@ -370,6 +370,12 @@ function applyMutation(currentState, op, payload) {
     }
     case 'mergeFogExplored': {
       const incoming = Array.isArray(payload?.exploredCells) ? payload.exploredCells : []
+      const tokenId = typeof payload?.tokenId === 'string' ? payload.tokenId : ''
+      const exploredByToken = { ...(currentState.fog?.exploredByToken ?? {}) }
+      if (tokenId) {
+        exploredByToken[tokenId] = mergeExploredCells(exploredByToken[tokenId], incoming)
+      }
+      const mergedGlobal = mergeExploredCells(currentState.fog?.exploredCells, incoming)
       return {
         ...currentState,
         fog: {
@@ -377,7 +383,8 @@ function applyMutation(currentState, op, payload) {
           cols: Number(payload?.cols) || currentState.fog?.cols || 0,
           rows: Number(payload?.rows) || currentState.fog?.rows || 0,
           gridSize: Number(payload?.gridSize) || currentState.fog?.gridSize || 24,
-          exploredCells: mergeExploredCells(currentState.fog?.exploredCells, incoming),
+          exploredCells: mergedGlobal,
+          exploredByToken,
         },
       }
     }
@@ -387,6 +394,7 @@ function applyMutation(currentState, op, payload) {
         fog: {
           ...(currentState.fog ?? {}),
           exploredCells: [],
+          exploredByToken: {},
         },
       }
     }
