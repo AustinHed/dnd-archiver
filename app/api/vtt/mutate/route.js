@@ -371,18 +371,23 @@ function applyMutation(currentState, op, payload) {
     case 'mergeFogExplored': {
       const incoming = Array.isArray(payload?.exploredCells) ? payload.exploredCells : []
       const tokenId = typeof payload?.tokenId === 'string' ? payload.tokenId : ''
-      const exploredByToken = { ...(currentState.fog?.exploredByToken ?? {}) }
+      const nextGridSize = Number(payload?.gridSize) || 4
+      const currentGridSize = Number(currentState.fog?.gridSize) || nextGridSize
+      const gridSizeChanged = currentGridSize !== nextGridSize
+      const exploredByToken = gridSizeChanged
+        ? {}
+        : { ...(currentState.fog?.exploredByToken ?? {}) }
       if (tokenId) {
         exploredByToken[tokenId] = mergeExploredCells(exploredByToken[tokenId], incoming)
       }
-      const mergedGlobal = mergeExploredCells(currentState.fog?.exploredCells, incoming)
+      const mergedGlobal = mergeExploredCells(gridSizeChanged ? [] : currentState.fog?.exploredCells, incoming)
       return {
         ...currentState,
         fog: {
           ...(currentState.fog ?? {}),
           cols: Number(payload?.cols) || currentState.fog?.cols || 0,
           rows: Number(payload?.rows) || currentState.fog?.rows || 0,
-          gridSize: Number(payload?.gridSize) || currentState.fog?.gridSize || 24,
+          gridSize: nextGridSize,
           exploredCells: mergedGlobal,
           exploredByToken,
         },

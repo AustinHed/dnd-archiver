@@ -55,8 +55,8 @@ test('visibility grid obeys wall blockers', () => {
     feetPerPixel: 1,
   })
 
-  // Cell at col=2,row=0 has center x=50 which should be blocked by vertical wall.
-  assert.equal(visibility.visible.includes(2), false)
+  // With 4px cells, col=8,row=0 has center x=34 and should be blocked by the vertical wall.
+  assert.equal(visibility.visible.includes(8), false)
 })
 
 test('darkness range limits non-darkvision and extends with darkvision', () => {
