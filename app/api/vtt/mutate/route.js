@@ -33,15 +33,26 @@ function toSegments(points) {
 }
 
 function normalizeShape(raw, defaults = {}) {
-  const points = ensurePoints(raw?.points, { min: 2 })
+  const minPoints = raw?.shapeType === 'circle' ? 1 : 2
+  const points = ensurePoints(raw?.points, { min: minPoints })
   if (!points) return null
+
+  const center = raw?.center && Number.isFinite(Number(raw.center.x)) && Number.isFinite(Number(raw.center.y))
+    ? { x: Number(raw.center.x), y: Number(raw.center.y) }
+    : null
+
+  const radius = Number(raw?.radius)
 
   return {
     id: raw?.id ?? uuidv4(),
-    kind: raw?.kind ?? defaults.kind ?? 'annotation',
+    kind: raw?.kind ?? raw?.shapeType ?? defaults.kind ?? defaults.shapeType ?? 'shape',
+    shapeType: raw?.shapeType ?? defaults.shapeType ?? raw?.kind ?? null,
     color: raw?.color ?? defaults.color ?? '#4ecdc4',
+    colorName: raw?.colorName ?? defaults.colorName ?? null,
     fill: raw?.fill ?? defaults.fill ?? 'rgba(78,205,196,0.2)',
     closed: raw?.closed ?? defaults.closed ?? true,
+    center: center ?? defaults.center ?? null,
+    radius: Number.isFinite(radius) ? radius : (defaults.radius ?? null),
     points,
   }
 }
@@ -88,9 +99,52 @@ function applyMutation(currentState, op, payload) {
         shapes: [...(currentState.shapes ?? []), shape],
       }
     }
+    case 'updateWall': {
+      const wallId = payload?.id
+      if (!wallId) return null
+      const a = payload?.a
+      const b = payload?.b
+      if (!a || !b) return null
+      const nextA = { x: Number(a.x), y: Number(a.y) }
+      const nextB = { x: Number(b.x), y: Number(b.y) }
+      if (!Number.isFinite(nextA.x) || !Number.isFinite(nextA.y) || !Number.isFinite(nextB.x) || !Number.isFinite(nextB.y)) return null
+      return {
+        ...currentState,
+        walls: (currentState.walls ?? []).map((wall) => (
+          wall.id === wallId
+            ? { ...wall, a: nextA, b: nextB }
+            : wall
+        )),
+      }
+    }
+    case 'removeWall': {
+      const wallId = payload?.id
+      if (!wallId) return null
+      return {
+        ...currentState,
+        walls: (currentState.walls ?? []).filter((wall) => wall.id !== wallId),
+      }
+    }
+    case 'restoreWall': {
+      const wall = payload?.wall
+      if (!wall?.id || !wall?.a || !wall?.b) return null
+      const nextA = { x: Number(wall.a.x), y: Number(wall.a.y) }
+      const nextB = { x: Number(wall.b.x), y: Number(wall.b.y) }
+      if (!Number.isFinite(nextA.x) || !Number.isFinite(nextA.y) || !Number.isFinite(nextB.x) || !Number.isFinite(nextB.y)) return null
+      return {
+        ...currentState,
+        walls: [...(currentState.walls ?? []), { id: wall.id, a: nextA, b: nextB }],
+      }
+    }
     case 'updateShape': {
       const shapeId = payload?.id
       if (!shapeId) return null
+      const candidatePoints = payload.points ? ensurePoints(payload.points, { min: payload.shapeType === 'circle' ? 1 : 2 }) : null
+      const candidateCenter = payload.center && Number.isFinite(Number(payload.center.x)) && Number.isFinite(Number(payload.center.y))
+        ? { x: Number(payload.center.x), y: Number(payload.center.y) }
+        : undefined
+      const candidateRadius = Number(payload.radius)
+
       return {
         ...currentState,
         shapes: (currentState.shapes ?? []).map((shape) => (
@@ -98,7 +152,9 @@ function applyMutation(currentState, op, payload) {
             ? {
                 ...shape,
                 ...payload,
-                points: ensurePoints(payload.points, { min: 2 }) ?? shape.points,
+                points: candidatePoints ?? shape.points,
+                center: candidateCenter ?? shape.center,
+                radius: Number.isFinite(candidateRadius) ? candidateRadius : shape.radius,
               }
             : shape
         )),
@@ -126,6 +182,8 @@ function applyMutation(currentState, op, payload) {
             name: payload?.name ?? 'Token',
             size: payload?.size ?? 'medium',
             ringColor: payload?.ringColor ?? 'clear',
+            role: payload?.role ?? 'npc',
+            darkvision: Boolean(payload?.darkvision),
             x,
             y,
           },
@@ -145,6 +203,7 @@ function applyMutation(currentState, op, payload) {
                 ...payload,
                 x: Number.isFinite(Number(payload.x)) ? Number(payload.x) : token.x,
                 y: Number.isFinite(Number(payload.y)) ? Number(payload.y) : token.y,
+                darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
               }
             : token
         )),

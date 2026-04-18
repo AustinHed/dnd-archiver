@@ -154,7 +154,7 @@ function inferShapeColorId(shape) {
   return match?.id ?? 'blue'
 }
 
-function createAnnotationShapePayload(shapeType, x, y, colorId) {
+function createMapShapePayload(shapeType, x, y, colorId) {
   const colorName = colorId || 'blue'
   const color = shapeStrokeFromColorId(colorName)
   const fill = shapeFillFromColorId(colorName)
@@ -165,7 +165,7 @@ function createAnnotationShapePayload(shapeType, x, y, colorId) {
     return {
       points: [center, { x: x + radius, y }],
       closed: true,
-      kind: 'annotation',
+      kind: 'circle',
       shapeType: 'circle',
       center,
       radius,
@@ -179,7 +179,7 @@ function createAnnotationShapePayload(shapeType, x, y, colorId) {
     return {
       points: buildTrianglePoints(x, y),
       closed: true,
-      kind: 'annotation',
+      kind: 'triangle',
       shapeType: 'triangle',
       colorName,
       color,
@@ -191,7 +191,7 @@ function createAnnotationShapePayload(shapeType, x, y, colorId) {
     return {
       points: buildSquarePoints(x, y),
       closed: true,
-      kind: 'annotation',
+      kind: 'square',
       shapeType: 'square',
       colorName,
       color,
@@ -202,7 +202,7 @@ function createAnnotationShapePayload(shapeType, x, y, colorId) {
   return {
     points: buildRectanglePoints(x, y),
     closed: true,
-    kind: 'annotation',
+    kind: 'rectangle',
     shapeType: 'rectangle',
     colorName,
     color,
@@ -225,7 +225,7 @@ function formatDistanceLabel(pxDistance, feetPerPx) {
 }
 
 function getShapeScaleHandle(shape) {
-  if (!shape || shape.kind !== 'annotation') return null
+  if (!shape || !shape.shapeType) return null
   if (shape.shapeType === 'circle') {
     const { center, radius } = getCircleGeometry(shape)
     return { x: center.x + radius, y: center.y }
@@ -242,7 +242,7 @@ function getShapeScaleHandle(shape) {
 
 function moveShapePayload(shape, dx, dy) {
   if (!shape) return null
-  if (shape.shapeType === 'circle' && shape.kind === 'annotation') {
+  if (shape.shapeType === 'circle') {
     const { center, radius } = getCircleGeometry(shape)
     const movedCenter = { x: center.x + dx, y: center.y + dy }
     return {
@@ -257,7 +257,7 @@ function moveShapePayload(shape, dx, dy) {
 }
 
 function scaleShapePayload(shape, targetPoint) {
-  if (!shape || shape.kind !== 'annotation' || !targetPoint) return null
+  if (!shape || !shape.shapeType || !targetPoint) return null
 
   if (shape.shapeType === 'circle') {
     const { center } = getCircleGeometry(shape)
@@ -297,7 +297,7 @@ function scaleShapePayload(shape, targetPoint) {
 }
 
 function shapeMeasurements(shape, feetPerPx) {
-  if (!shape || shape.kind !== 'annotation') return []
+  if (!shape || !shape.shapeType) return []
 
   if (shape.shapeType === 'circle') {
     const { center, radius } = getCircleGeometry(shape)
@@ -386,6 +386,37 @@ function findSnapPoint(points, pointer, threshold = SNAP_THRESHOLD_PX) {
   return closest
 }
 
+function interpolatePointAlongPath(points, progress) {
+  if (!points?.length) return null
+  if (points.length === 1) return points[0]
+  const clamped = clamp(progress, 0, 1)
+
+  const segments = []
+  let total = 0
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const start = points[i]
+    const end = points[i + 1]
+    const length = distancePx(start, end)
+    segments.push({ start, end, length })
+    total += length
+  }
+  if (total <= 0) return points.at(-1)
+
+  let target = total * clamped
+  for (const segment of segments) {
+    if (target <= segment.length) {
+      const t = segment.length <= 0 ? 1 : target / segment.length
+      return {
+        x: segment.start.x + (segment.end.x - segment.start.x) * t,
+        y: segment.start.y + (segment.end.y - segment.start.y) * t,
+      }
+    }
+    target -= segment.length
+  }
+
+  return points.at(-1)
+}
+
 function getClientId() {
   if (typeof window === 'undefined') return 'server'
 
@@ -405,7 +436,7 @@ export default function VttClient() {
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [draftPoints, setDraftPoints] = useState([])
-  const [measurePoints, setMeasurePoints] = useState([])
+  const [measureDrag, setMeasureDrag] = useState(null)
   const [pathPoints, setPathPoints] = useState([])
   const [calibrationPoints, setCalibrationPoints] = useState([])
   const [calibrationFeet, setCalibrationFeet] = useState('30')
@@ -413,22 +444,25 @@ export default function VttClient() {
   const [startMapId, setStartMapId] = useState('')
   const [linkResultId, setLinkResultId] = useState('')
   const [pointerPosition, setPointerPosition] = useState(null)
+  const [mapUndoStack, setMapUndoStack] = useState([])
+  const [selectedWallId, setSelectedWallId] = useState('')
   const [selectedShapeId, setSelectedShapeId] = useState('')
   const [shapeDraftType, setShapeDraftType] = useState('rectangle')
   const [shapeDraftColor, setShapeDraftColor] = useState('blue')
   const [selectedShapeColor, setSelectedShapeColor] = useState('blue')
   const [selectedTokenId, setSelectedTokenId] = useState('')
+  const [focusedPlayerTokenId, setFocusedPlayerTokenId] = useState('dm')
   const [partyCharacters, setPartyCharacters] = useState([])
-  const [npcRoster, setNpcRoster] = useState([])
   const [selectedPartyCharacter, setSelectedPartyCharacter] = useState('')
-  const [selectedNpcName, setSelectedNpcName] = useState('')
-  const [tokenDraft, setTokenDraft] = useState({ name: 'Token', size: 'medium', ringColor: 'clear' })
-  const [npcTokenDraft, setNpcTokenDraft] = useState({ name: 'NPC', size: 'medium', ringColor: 'red' })
+  const [selectedNpcTokenId, setSelectedNpcTokenId] = useState('')
+  const [tokenDraft, setTokenDraft] = useState({ name: 'Token', size: 'medium', ringColor: 'clear', darkvision: false })
+  const [npcTokenDraft, setNpcTokenDraft] = useState({ name: 'NPC', size: 'medium', ringColor: 'red', darkvision: false })
   const [character, setCharacter] = useState({ moveSpeed: 30, darkvision: false })
   const [viewMode, setViewMode] = useState('player')
   const [clientId, setClientId] = useState('')
   const [mapRenderError, setMapRenderError] = useState('')
   const [pingClock, setPingClock] = useState(Date.now())
+  const [shapePreview, setShapePreview] = useState(null)
   const [expandedMenus, setExpandedMenus] = useState({
     mapSetup: true,
     dungeonMaster: true,
@@ -475,17 +509,14 @@ export default function VttClient() {
 
   useEffect(() => {
     setClientId(getClientId())
-  }, [])
+  }, [npcTokens])
 
   useEffect(() => {
     let mounted = true
 
     async function loadRosters() {
       try {
-        const [charactersRes, npcsRes] = await Promise.all([
-          fetch('/api/characters', { cache: 'no-store' }),
-          fetch('/api/npcs', { cache: 'no-store' }),
-        ])
+        const charactersRes = await fetch('/api/characters', { cache: 'no-store' })
 
         if (!mounted) return
 
@@ -503,21 +534,6 @@ export default function VttClient() {
             }))
           }
         }
-
-        if (npcsRes.ok) {
-          const npcsJson = await npcsRes.json()
-          const nextNpcs = Array.isArray(npcsJson) ? npcsJson : []
-          setNpcRoster(nextNpcs)
-
-          if (nextNpcs.length) {
-            const firstName = nextNpcs[0].name
-            setSelectedNpcName((prev) => prev || firstName)
-            setNpcTokenDraft((prev) => ({
-              ...prev,
-              name: prev.name === 'NPC' ? firstName : prev.name,
-            }))
-          }
-        }
       } catch (err) {
         console.error('Failed to load character/NPC rosters', err)
       }
@@ -527,7 +543,7 @@ export default function VttClient() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [npcTokens])
 
   useEffect(() => {
     let mounted = true
@@ -537,8 +553,10 @@ export default function VttClient() {
         const nextBundle = await refresh(clientId)
         if (!mounted) return
 
-        const firstTokenId = nextBundle?.activeState?.tokens?.[0]?.id ?? ''
+        const firstPlayerId = nextBundle?.activeState?.tokens?.find((token) => token.role === 'player')?.id ?? ''
+        const firstTokenId = firstPlayerId || (nextBundle?.activeState?.tokens?.[0]?.id ?? '')
         setSelectedTokenId((prev) => prev || firstTokenId)
+        setFocusedPlayerTokenId((prev) => (prev === 'dm' ? prev : (prev || firstPlayerId || 'dm')))
       } catch (err) {
         if (!mounted) return
         setError(err.message)
@@ -554,9 +572,38 @@ export default function VttClient() {
   }, [refresh, clientId])
 
   useEffect(() => {
-    if (!bundle?.activeState?.tokens?.length) return
-    setSelectedTokenId((prev) => prev || bundle.activeState.tokens[0].id)
+    const tokens = bundle?.activeState?.tokens ?? []
+    if (!tokens.length) {
+      setSelectedTokenId('')
+      setFocusedPlayerTokenId('dm')
+      setSelectedNpcTokenId('')
+      return
+    }
+
+    const firstPlayer = tokens.find((token) => token.role === 'player')
+    setSelectedTokenId((prev) => prev || firstPlayer?.id || tokens[0].id)
+
+    setFocusedPlayerTokenId((prev) => {
+      if (prev === 'dm') return 'dm'
+      if (prev && tokens.some((token) => token.id === prev && token.role === 'player')) return prev
+      return firstPlayer?.id || 'dm'
+    })
+
+    setSelectedNpcTokenId((prev) => {
+      if (prev && tokens.some((token) => token.id === prev && token.role === 'npc')) return prev
+      return tokens.find((token) => token.role === 'npc')?.id ?? ''
+    })
   }, [bundle?.activeState?.tokens])
+
+  useEffect(() => {
+    setDraftPoints([])
+    setPathPoints([])
+    setMeasureDrag(null)
+    setPointerPosition(null)
+    setSelectedWallId('')
+    setSelectedShapeId('')
+    setMapUndoStack([])
+  }, [bundle?.activeMap?.id])
 
   useEffect(() => {
     if (!bundle?.activeMap) return
@@ -636,10 +683,31 @@ export default function VttClient() {
 
   const feetPerPx = useMemo(() => feetPerPixelFromCalibration(activeMap?.calibration), [activeMap?.calibration])
 
+  const playerTokens = useMemo(
+    () => (activeState?.tokens ?? []).filter((token) => token.role === 'player'),
+    [activeState?.tokens],
+  )
+
+  const npcTokens = useMemo(
+    () => (activeState?.tokens ?? []).filter((token) => token.role === 'npc'),
+    [activeState?.tokens],
+  )
+
+  const barrierShapes = useMemo(
+    () => (activeState?.shapes ?? []).filter((shape) => shape.kind === 'barrier'),
+    [activeState?.shapes],
+  )
+
   const selectedToken = useMemo(
     () => activeState?.tokens?.find((token) => token.id === selectedTokenId) ?? null,
     [activeState?.tokens, selectedTokenId],
   )
+
+  const visionToken = useMemo(() => {
+    if (viewMode !== 'player') return selectedToken
+    const tokenId = focusedPlayerTokenId === 'dm' ? selectedTokenId : focusedPlayerTokenId
+    return activeState?.tokens?.find((token) => token.id === tokenId) ?? selectedToken ?? null
+  }, [activeState?.tokens, focusedPlayerTokenId, selectedToken, selectedTokenId, viewMode])
 
   useEffect(() => {
     if (!selectedToken) return
@@ -647,12 +715,30 @@ export default function VttClient() {
       name: selectedToken.name || 'Token',
       size: selectedToken.size || 'medium',
       ringColor: selectedToken.ringColor || 'clear',
+      darkvision: Boolean(selectedToken.darkvision),
     })
   }, [selectedToken?.id])
+
+  useEffect(() => {
+    if (!selectedNpcTokenId) return
+    const token = npcTokens.find((entry) => entry.id === selectedNpcTokenId)
+    if (!token) return
+    setNpcTokenDraft({
+      name: token.name || 'NPC',
+      size: token.size || 'medium',
+      ringColor: token.ringColor || 'red',
+      darkvision: Boolean(token.darkvision),
+    })
+  }, [npcTokens, selectedNpcTokenId])
 
   const selectedShape = useMemo(
     () => activeState?.shapes?.find((shape) => shape.id === selectedShapeId) ?? null,
     [activeState?.shapes, selectedShapeId],
+  )
+
+  const selectedWall = useMemo(
+    () => activeState?.walls?.find((wall) => wall.id === selectedWallId) ?? null,
+    [activeState?.walls, selectedWallId],
   )
 
   useEffect(() => {
@@ -661,17 +747,21 @@ export default function VttClient() {
   }, [selectedShape?.id, selectedShape?.color, selectedShape?.colorName])
 
   const visibility = useMemo(() => {
-    if (!activeMap || !activeState || !selectedToken) return null
+    if (!activeMap || !activeState || !visionToken) return null
+
+    const darkvisionEnabled = viewMode === 'player'
+      ? Boolean(visionToken.darkvision)
+      : Boolean(character.darkvision)
 
     return computeVisibilityGrid({
       state: activeState,
       mapWidth: activeMap.width,
       mapHeight: activeMap.height,
-      token: selectedToken,
-      darkvision: character.darkvision,
+      token: visionToken,
+      darkvision: darkvisionEnabled,
       feetPerPixel: feetPerPx,
     })
-  }, [activeMap, activeState, selectedToken, character.darkvision, feetPerPx])
+  }, [activeMap, activeState, character.darkvision, feetPerPx, viewMode, visionToken])
 
   const pathFeet = useMemo(() => computePathDistanceFeet(pathPoints, feetPerPx), [pathPoints, feetPerPx])
   const movementRemaining = Number(character.moveSpeed) - pathFeet
@@ -720,6 +810,10 @@ export default function VttClient() {
   useEffect(() => {
     setPointerPosition(null)
   }, [tool])
+
+  useEffect(() => {
+    setShapePreview(null)
+  }, [selectedShapeId])
 
   useEffect(() => {
     if (!activeMap || !activeState?.fog?.enabled || !visibility) return
@@ -981,6 +1075,8 @@ export default function VttClient() {
         name: tokenDraft.name || 'Token',
         size: tokenDraft.size,
         ringColor: tokenDraft.ringColor,
+        darkvision: Boolean(tokenDraft.darkvision),
+        role: 'player',
       })
     } catch (err) {
       setError(err.message)
@@ -992,14 +1088,16 @@ export default function VttClient() {
       await callMutation('addToken', {
         x: point.x,
         y: point.y,
-        name: npcTokenDraft.name || selectedNpcName || 'NPC',
+        name: npcTokenDraft.name || 'NPC',
         size: npcTokenDraft.size,
         ringColor: npcTokenDraft.ringColor,
+        darkvision: Boolean(npcTokenDraft.darkvision),
+        role: 'npc',
       })
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, npcTokenDraft, selectedNpcName])
+  }, [callMutation, npcTokenDraft])
 
   const onStageClick = useCallback(async (event) => {
     if (!activeMap || !bundle?.live?.active) return
@@ -1015,11 +1113,6 @@ export default function VttClient() {
         }
       }
       setDraftPoints((prev) => [...prev, { x: pointer.x, y: pointer.y }])
-      return
-    }
-
-    if (tool === 'measure') {
-      setMeasurePoints((prev) => (prev.length >= 2 ? [{ x: pointer.x, y: pointer.y }] : [...prev, { x: pointer.x, y: pointer.y }]))
       return
     }
 
@@ -1059,7 +1152,7 @@ export default function VttClient() {
 
     if (tool === 'shape') {
       try {
-        const payload = createAnnotationShapePayload(shapeDraftType, pointer.x, pointer.y, shapeDraftColor)
+        const payload = createMapShapePayload(shapeDraftType, pointer.x, pointer.y, shapeDraftColor)
         const data = await callMutation('addShape', payload)
         const created = data?.state?.shapes?.[data.state.shapes.length - 1]
         if (created?.id) {
@@ -1071,11 +1164,27 @@ export default function VttClient() {
     }
   }, [activeMap, bundle?.live?.active, callMutation, commitDraftPoints, draftPoints, placeNpcToken, placeToken, selectedToken, shapeDraftColor, shapeDraftType, tool])
 
-  const onStagePointerMove = useCallback((event) => {
-    if (tool !== 'wall' && tool !== 'barrier') return
+  const onStagePointerDown = useCallback((event) => {
+    if (tool !== 'measure' || !activeMap || !bundle?.live?.active) return
     const pointer = event.target.getStage()?.getPointerPosition()
     if (!pointer) return
-    setPointerPosition({ x: pointer.x, y: pointer.y })
+    setMeasureDrag({ start: { x: pointer.x, y: pointer.y }, end: { x: pointer.x, y: pointer.y } })
+  }, [activeMap, bundle?.live?.active, tool])
+
+  const onStagePointerMove = useCallback((event) => {
+    const pointer = event.target.getStage()?.getPointerPosition()
+    if (!pointer) return
+
+    if (tool === 'wall' || tool === 'barrier') {
+      setPointerPosition({ x: pointer.x, y: pointer.y })
+    }
+
+    setMeasureDrag((prev) => (prev ? { ...prev, end: { x: pointer.x, y: pointer.y } } : prev))
+  }, [tool])
+
+  const onStagePointerUp = useCallback(() => {
+    if (tool !== 'measure') return
+    setMeasureDrag(null)
   }, [tool])
 
   const onTokenDragEnd = useCallback(async (tokenId, event) => {
@@ -1091,11 +1200,51 @@ export default function VttClient() {
   const finalizePathMove = useCallback(async () => {
     if (!selectedToken || pathPoints.length < 2) return
 
+    const tokenId = selectedToken.id
+    const route = pathPoints.map((point) => ({ x: point.x, y: point.y }))
     const destination = pathPoints[pathPoints.length - 1]
 
     try {
+      const totalPx = route.slice(1).reduce((sum, point, index) => (
+        sum + distancePx(route[index], point)
+      ), 0)
+      const durationMs = clamp(Math.round(totalPx * 7), 350, 3000)
+      const startTime = performance.now()
+
+      await new Promise((resolve) => {
+        const tick = (now) => {
+          const elapsed = now - startTime
+          const progress = clamp(elapsed / durationMs, 0, 1)
+          const nextPoint = interpolatePointAlongPath(route, progress)
+          if (nextPoint) {
+            setBundle((prev) => {
+              if (!prev?.activeState) return prev
+              return {
+                ...prev,
+                activeState: {
+                  ...prev.activeState,
+                  tokens: (prev.activeState.tokens ?? []).map((token) => (
+                    token.id === tokenId
+                      ? { ...token, x: nextPoint.x, y: nextPoint.y }
+                      : token
+                  )),
+                },
+              }
+            })
+          }
+
+          if (progress < 1) {
+            requestAnimationFrame(tick)
+            return
+          }
+          resolve()
+        }
+
+        requestAnimationFrame(tick)
+      })
+
       await callMutation('updateToken', {
-        id: selectedToken.id,
+        id: tokenId,
         x: destination.x,
         y: destination.y,
       })
@@ -1122,12 +1271,49 @@ export default function VttClient() {
     if (!selectedShapeId) return
 
     try {
+      if (selectedShape?.kind === 'barrier') {
+        setMapUndoStack((prev) => [{ op: 'addShape', payload: { ...selectedShape } }, ...prev].slice(0, 20))
+      }
       await callMutation('removeShape', { id: selectedShapeId })
       setSelectedShapeId('')
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, selectedShapeId])
+  }, [callMutation, selectedShape, selectedShapeId])
+
+  const removeSelectedWall = useCallback(async () => {
+    if (!selectedWall) return
+    try {
+      setMapUndoStack((prev) => [{ op: 'restoreWall', payload: { wall: { ...selectedWall } } }, ...prev].slice(0, 20))
+      await callMutation('removeWall', { id: selectedWall.id })
+      setSelectedWallId('')
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, selectedWall])
+
+  const removeSelectedBarrier = useCallback(async () => {
+    if (!selectedShape || selectedShape.kind !== 'barrier') return
+    try {
+      setMapUndoStack((prev) => [{ op: 'addShape', payload: { ...selectedShape } }, ...prev].slice(0, 20))
+      await callMutation('removeShape', { id: selectedShape.id })
+      setSelectedShapeId('')
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, selectedShape])
+
+  const undoMapEdit = useCallback(async () => {
+    const action = mapUndoStack[0]
+    if (!action) return
+    setMapUndoStack((prev) => prev.slice(1))
+
+    try {
+      await callMutation(action.op, action.payload)
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, mapUndoStack])
 
   const removeToken = useCallback(async () => {
     if (!selectedTokenId) return
@@ -1139,6 +1325,32 @@ export default function VttClient() {
       setError(err.message)
     }
   }, [callMutation, selectedTokenId])
+
+  const updateNpcToken = useCallback(async () => {
+    if (!selectedNpcTokenId) return
+    try {
+      await callMutation('updateToken', {
+        id: selectedNpcTokenId,
+        name: npcTokenDraft.name,
+        size: npcTokenDraft.size,
+        ringColor: npcTokenDraft.ringColor,
+        darkvision: Boolean(npcTokenDraft.darkvision),
+        role: 'npc',
+      })
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, npcTokenDraft.darkvision, npcTokenDraft.name, npcTokenDraft.ringColor, npcTokenDraft.size, selectedNpcTokenId])
+
+  const deleteNpcToken = useCallback(async () => {
+    if (!selectedNpcTokenId) return
+    try {
+      await callMutation('removeToken', { id: selectedNpcTokenId })
+      setSelectedNpcTokenId('')
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [callMutation, selectedNpcTokenId])
 
   const linkMap = useCallback(async () => {
     if (!activeMap || !linkResultId) return
@@ -1172,16 +1384,42 @@ export default function VttClient() {
     setTokenDraft((prev) => ({ ...prev, name }))
   }, [])
 
-  const selectNpc = useCallback((name) => {
-    setSelectedNpcName(name)
-    if (!name) return
-    setNpcTokenDraft((prev) => ({ ...prev, name }))
+  const selectFocusedPlayer = useCallback((value) => {
+    setFocusedPlayerTokenId(value)
+    if (value === 'dm') {
+      setViewMode('dm')
+      return
+    }
+
+    setViewMode('player')
+    setSelectedTokenId(value)
   }, [])
 
-  const measurementFeet = useMemo(() => {
-    if (measurePoints.length !== 2 || !feetPerPx) return null
-    return distancePx(measurePoints[0], measurePoints[1]) * feetPerPx
-  }, [measurePoints, feetPerPx])
+  const selectNpcToken = useCallback((tokenId) => {
+    setSelectedNpcTokenId(tokenId)
+    if (!tokenId) return
+    const token = npcTokens.find((entry) => entry.id === tokenId)
+    if (!token) return
+    setNpcTokenDraft({
+      name: token.name || 'NPC',
+      size: token.size || 'medium',
+      ringColor: token.ringColor || 'red',
+      darkvision: Boolean(token.darkvision),
+    })
+  }, [npcTokens])
+
+  const measurementDistance = useMemo(() => {
+    if (!measureDrag?.start || !measureDrag?.end) return null
+    const distance = distancePx(measureDrag.start, measureDrag.end)
+    return {
+      px: distance,
+      feet: feetPerPx ? distance * feetPerPx : null,
+      mid: {
+        x: (measureDrag.start.x + measureDrag.end.x) / 2,
+        y: (measureDrag.start.y + measureDrag.end.y) / 2,
+      },
+    }
+  }, [feetPerPx, measureDrag])
 
   const fogRects = useMemo(() => {
     if (!activeState?.fog?.enabled || !visibility) return []
@@ -1235,23 +1473,34 @@ export default function VttClient() {
       }
     }
 
-    if (selectedTokenId) {
-      ids.add(selectedTokenId)
+    if (visionToken?.id) {
+      ids.add(visionToken.id)
     }
 
     return ids
-  }, [activeState?.fog?.enabled, activeState?.tokens, selectedTokenId, viewMode, visibility])
+  }, [activeState?.fog?.enabled, activeState?.tokens, viewMode, visibility, visionToken?.id])
 
   const draftSnapPoint = useMemo(() => {
     if ((tool !== 'wall' && tool !== 'barrier') || !pointerPosition || draftPoints.length < 2) return null
     return findSnapPoint(draftPoints, pointerPosition)
   }, [draftPoints, pointerPosition, tool])
 
-  const selectedShapeHandle = useMemo(() => getShapeScaleHandle(selectedShape), [selectedShape])
+  const selectedShapeHandle = useMemo(() => {
+    if (!selectedShape) return null
+    const effectiveShape = shapePreview?.shapeId === selectedShape.id
+      ? { ...selectedShape, ...shapePreview.payload }
+      : selectedShape
+    return getShapeScaleHandle(effectiveShape)
+  }, [selectedShape, shapePreview])
 
   const shapeMeasurementEntries = useMemo(() => {
-    return (activeState?.shapes ?? []).flatMap((shape) => shapeMeasurements(shape, feetPerPx))
-  }, [activeState?.shapes, feetPerPx])
+    return (activeState?.shapes ?? []).flatMap((shape) => {
+      const effectiveShape = shapePreview?.shapeId === shape.id
+        ? { ...shape, ...shapePreview.payload }
+        : shape
+      return shapeMeasurements(effectiveShape, feetPerPx)
+    })
+  }, [activeState?.shapes, feetPerPx, shapePreview])
 
   useEffect(() => {
     setMapRenderError('')
@@ -1395,6 +1644,32 @@ export default function VttClient() {
                   </div>
                 )}
               </div>
+
+              <div style={subSectionStyle}>
+                <div style={subSectionTitleStyle}>Walls + Barriers</div>
+                <select value={selectedWallId} onChange={(event) => setSelectedWallId(event.target.value)} style={inputStyle}>
+                  <option value="">Select wall</option>
+                  {(activeState?.walls ?? []).map((wall, index) => (
+                    <option key={wall.id} value={wall.id}>Wall {index + 1}</option>
+                  ))}
+                </select>
+                <select value={selectedShape?.kind === 'barrier' ? selectedShape.id : ''} onChange={(event) => setSelectedShapeId(event.target.value)} style={{ ...inputStyle, marginTop: '0.35rem' }}>
+                  <option value="">Select barrier</option>
+                  {barrierShapes.map((barrier, index) => (
+                    <option key={barrier.id} value={barrier.id}>Barrier {index + 1}</option>
+                  ))}
+                </select>
+                <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
+                  <button onClick={removeSelectedWall} disabled={!selectedWallId} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete Wall</button>
+                  <button onClick={removeSelectedBarrier} disabled={selectedShape?.kind !== 'barrier'} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete Barrier</button>
+                </div>
+                <button onClick={undoMapEdit} disabled={!mapUndoStack.length} style={{ ...buttonStyle('#1f2736', '#3d5f95'), marginTop: '0.4rem', width: '100%' }}>
+                  Undo Last Map Edit
+                </button>
+                <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
+                  Click and drag selected walls/barriers on the map to reposition them.
+                </p>
+              </div>
             </div>
           )}
         </section>
@@ -1416,13 +1691,6 @@ export default function VttClient() {
                   }}
                 />
                 Enable fog of war
-              </label>
-              <label style={{ marginTop: '0.5rem', display: 'block', fontSize: '0.8rem', color: '#aaa' }}>
-                View mode
-                <select value={viewMode} onChange={(event) => setViewMode(event.target.value)} style={{ ...inputStyle, marginTop: '0.2rem' }}>
-                  <option value="player">Player</option>
-                  <option value="dm">Dungeon Master</option>
-                </select>
               </label>
 
               <div style={subSectionStyle}>
@@ -1449,13 +1717,10 @@ export default function VttClient() {
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>NPC Token Setup</div>
-                <select value={selectedNpcName} onChange={(event) => selectNpc(event.target.value)} style={inputStyle}>
-                  <option value="">Select NPC</option>
-                  {npcRoster.map((npc) => (
-                    <option key={npc.slug || npc.name} value={npc.name}>{npc.name}</option>
-                  ))}
-                </select>
-                <div style={{ marginTop: '0.4rem', display: 'grid', gap: '0.35rem' }}>
+                <p style={{ margin: '0 0 0.35rem', color: '#777', fontSize: '0.75rem' }}>
+                  Use Add NPC Token tool, then click the map to place a generic NPC.
+                </p>
+                <div style={{ marginTop: '0.2rem', display: 'grid', gap: '0.35rem' }}>
                   <input
                     type="text"
                     value={npcTokenDraft.name}
@@ -1475,10 +1740,29 @@ export default function VttClient() {
                     <option value="red">Ring: Red</option>
                     <option value="blue">Ring: Blue</option>
                   </select>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(npcTokenDraft.darkvision)}
+                      onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, darkvision: event.target.checked }))}
+                    />
+                    NPC has dark vision
+                  </label>
                 </div>
-                <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                  Select Add NPC Token, then click the map to place.
-                </p>
+              </div>
+
+              <div style={subSectionStyle}>
+                <div style={subSectionTitleStyle}>Manage NPC Tokens</div>
+                <select value={selectedNpcTokenId} onChange={(event) => selectNpcToken(event.target.value)} style={inputStyle}>
+                  <option value="">Select NPC token</option>
+                  {npcTokens.map((token) => (
+                    <option key={token.id} value={token.id}>{token.name}</option>
+                  ))}
+                </select>
+                <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
+                  <button onClick={updateNpcToken} disabled={!selectedNpcTokenId} style={buttonStyle('#1f2736', '#3d5f95')}>Update NPC</button>
+                  <button onClick={deleteNpcToken} disabled={!selectedNpcTokenId} style={buttonStyle('#351a1a', '#7a2b2b')}>Delete NPC</button>
+                </div>
               </div>
             </div>
           )}
@@ -1535,7 +1819,7 @@ export default function VttClient() {
               </select>
               {selectedShape && (
                 <>
-                  {selectedShape.kind === 'annotation' && (
+                  {selectedShape.shapeType && (
                     <select
                       value={selectedShapeColor}
                       onChange={(event) => {
@@ -1576,12 +1860,22 @@ export default function VttClient() {
                 ))}
               </div>
 
+              <div style={subSectionStyle}>
+                <div style={subSectionTitleStyle}>Focused View</div>
+                <select value={focusedPlayerTokenId} onChange={(event) => selectFocusedPlayer(event.target.value)} style={inputStyle}>
+                  <option value="dm">Dungeon Master View</option>
+                  {playerTokens.map((token) => (
+                    <option key={token.id} value={token.id}>{token.name}</option>
+                  ))}
+                </select>
+              </div>
+
               {tool === 'path' && (
                 <div style={{ marginTop: '0.5rem', display: 'grid', gap: '0.3rem' }}>
                   <button onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])} style={buttonStyle('#2b2b2b', '#4b4b4b')}>
                     Start Path From Token
                   </button>
-                  <button onClick={finalizePathMove} style={buttonStyle('#233622', '#3d8b3a')}>Commit Path Move</button>
+                  <button onClick={finalizePathMove} style={buttonStyle('#233622', '#3d8b3a')}>Animate Path Move</button>
                   <button onClick={() => setPathPoints([])} style={buttonStyle('#2b2b2b', '#4b4b4b')}>Clear Path</button>
                   <div style={{ fontSize: '0.78rem', color: '#888' }}>
                     Used: {formatFeet(pathFeet)} ft | Remaining: {formatFeet(movementRemaining)} ft
@@ -1627,10 +1921,18 @@ export default function VttClient() {
                 <div style={subSectionTitleStyle}>Update Existing Player Token</div>
                 <select value={selectedTokenId} onChange={(event) => setSelectedTokenId(event.target.value)} style={inputStyle}>
                   <option value="">Select token</option>
-                  {(activeState?.tokens ?? []).map((tokenEntry) => (
+                  {playerTokens.map((tokenEntry) => (
                     <option key={tokenEntry.id} value={tokenEntry.id}>{tokenEntry.name}</option>
                   ))}
                 </select>
+                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginTop: '0.35rem', marginBottom: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(tokenDraft.darkvision)}
+                    onChange={(event) => setTokenDraft((prev) => ({ ...prev, darkvision: event.target.checked }))}
+                  />
+                  Player has dark vision
+                </label>
                 <div style={{ ...rowButtonStyle, marginTop: '0.45rem' }}>
                   <button
                     onClick={() => {
@@ -1640,6 +1942,8 @@ export default function VttClient() {
                         ringColor: tokenDraft.ringColor,
                         size: tokenDraft.size,
                         name: tokenDraft.name,
+                        darkvision: Boolean(tokenDraft.darkvision),
+                        role: 'player',
                       }).catch((err) => setError(err.message))
                     }}
                     style={buttonStyle('#1f2736', '#3d5f95')}
@@ -1651,7 +1955,7 @@ export default function VttClient() {
               </div>
 
               <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Player Vision + Movement</div>
+                <div style={subSectionTitleStyle}>Path + Movement</div>
                 <label style={labelStyle}>
                   Move speed (ft)
                   <input
@@ -1662,16 +1966,8 @@ export default function VttClient() {
                     style={inputStyle}
                   />
                 </label>
-                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={character.darkvision}
-                    onChange={(event) => setCharacter((prev) => ({ ...prev, darkvision: event.target.checked }))}
-                  />
-                  Dark vision enabled
-                </label>
                 <button onClick={saveCharacter} disabled={!activeMap} style={{ ...buttonStyle('#1f2736', '#3d5f95'), width: '100%' }}>
-                  Save Player Settings
+                  Save Move Speed
                 </button>
               </div>
             </div>
@@ -1715,8 +2011,13 @@ export default function VttClient() {
               width={stageWidth}
               height={stageHeight}
               onClick={onStageClick}
+              onMouseDown={onStagePointerDown}
               onMouseMove={onStagePointerMove}
-              onMouseLeave={() => setPointerPosition(null)}
+              onMouseUp={onStagePointerUp}
+              onMouseLeave={() => {
+                setPointerPosition(null)
+                if (tool === 'measure') setMeasureDrag(null)
+              }}
               style={{ position: 'absolute', left: 0, top: 0, background: 'transparent' }}
             >
             <Layer>
@@ -1728,9 +2029,34 @@ export default function VttClient() {
                 <Line
                   key={wall.id}
                   points={[wall.a.x, wall.a.y, wall.b.x, wall.b.y]}
-                  stroke="#f5a623"
-                  strokeWidth={3}
-                  listening={false}
+                  stroke={wall.id === selectedWallId ? '#ffd978' : '#f5a623'}
+                  strokeWidth={wall.id === selectedWallId ? 4 : 3}
+                  draggable={wall.id === selectedWallId}
+                  onClick={(event) => {
+                    event.cancelBubble = true
+                    setSelectedWallId(wall.id)
+                    setSelectedShapeId('')
+                  }}
+                  onDragEnd={(event) => {
+                    const node = event.target
+                    const dx = node.x()
+                    const dy = node.y()
+                    node.position({ x: 0, y: 0 })
+
+                    const previous = { a: { ...wall.a }, b: { ...wall.b } }
+                    setMapUndoStack((prev) => [
+                      { op: 'updateWall', payload: { id: wall.id, ...previous } },
+                      ...prev,
+                    ].slice(0, 20))
+
+                    callMutation('updateWall', {
+                      id: wall.id,
+                      a: { x: wall.a.x + dx, y: wall.a.y + dy },
+                      b: { x: wall.b.x + dx, y: wall.b.y + dy },
+                    }).catch((err) => {
+                      setError(err.message)
+                    })
+                  }}
                 />
               ))}
 
@@ -1747,12 +2073,14 @@ export default function VttClient() {
               ))}
 
               {(activeState?.shapes ?? []).map((shape) => {
+                const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
+                const mergedShape = preview ? { ...shape, ...preview } : shape
                 const colorName = inferShapeColorId(shape)
                 const stroke = shape.color || shapeStrokeFromColorId(colorName)
                 const fill = shape.fill || shapeFillFromColorId(colorName)
 
-                if (shape.kind === 'annotation' && shape.shapeType === 'circle') {
-                  const { center, radius } = getCircleGeometry(shape)
+                if (mergedShape.shapeType === 'circle') {
+                  const { center, radius } = getCircleGeometry(mergedShape)
                   return (
                     <Circle
                       key={shape.id}
@@ -1772,8 +2100,11 @@ export default function VttClient() {
                         const dx = node.x() - center.x
                         const dy = node.y() - center.y
                         node.position({ x: center.x, y: center.y })
-                        const payload = moveShapePayload(shape, dx, dy)
+                        const payload = moveShapePayload(mergedShape, dx, dy)
                         if (!payload) return
+                        if (shape.kind === 'barrier') {
+                          setMapUndoStack((prev) => [{ op: 'updateShape', payload: { id: shape.id, points: shape.points } }, ...prev].slice(0, 20))
+                        }
                         callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
                           setError(err.message)
                         })
@@ -1785,8 +2116,8 @@ export default function VttClient() {
                 return (
                   <Line
                     key={shape.id}
-                    points={flattenPoints(shape.points)}
-                    closed={shape.closed !== false}
+                    points={flattenPoints(mergedShape.points)}
+                    closed={mergedShape.closed !== false}
                     stroke={stroke}
                     fill={fill}
                     strokeWidth={2}
@@ -1800,8 +2131,11 @@ export default function VttClient() {
                       const dx = node.x()
                       const dy = node.y()
                       node.position({ x: 0, y: 0 })
-                      const payload = moveShapePayload(shape, dx, dy)
+                      const payload = moveShapePayload(mergedShape, dx, dy)
                       if (!payload) return
+                      if (shape.kind === 'barrier') {
+                        setMapUndoStack((prev) => [{ op: 'updateShape', payload: { id: shape.id, points: shape.points } }, ...prev].slice(0, 20))
+                      }
                       callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
                         setError(err.message)
                       })
@@ -1810,7 +2144,7 @@ export default function VttClient() {
                 )
               })}
 
-              {selectedShape && selectedShapeHandle && selectedShape.kind === 'annotation' && (
+              {selectedShape && selectedShapeHandle && selectedShape.shapeType && (
                 <Circle
                   key={`${selectedShape.id}:handle:scale`}
                   x={selectedShapeHandle.x}
@@ -1820,9 +2154,15 @@ export default function VttClient() {
                   stroke="#111"
                   strokeWidth={1}
                   draggable
-                  onDragEnd={(event) => {
+                  onDragMove={(event) => {
                     const nextPoint = event.target.position()
                     const payload = scaleShapePayload(selectedShape, nextPoint)
+                    if (!payload) return
+                    setShapePreview({ shapeId: selectedShape.id, payload })
+                  }}
+                  onDragEnd={(event) => {
+                    const nextPoint = event.target.position()
+                    const payload = scaleShapePayload(selectedShape, nextPoint) ?? shapePreview?.payload
                     if (!payload) return
                     callMutation('updateShape', {
                       id: selectedShape.id,
@@ -1830,6 +2170,7 @@ export default function VttClient() {
                     }).catch((err) => {
                       setError(err.message)
                     })
+                    setShapePreview(null)
                   }}
                 />
               )}
@@ -1878,8 +2219,8 @@ export default function VttClient() {
                 />
               )}
 
-              {measurePoints.length > 1 && (
-                <Line points={flattenPoints(measurePoints)} stroke="#4ecdc4" strokeWidth={2} dash={[6, 4]} />
+              {measureDrag?.start && measureDrag?.end && (
+                <Line points={flattenPoints([measureDrag.start, measureDrag.end])} stroke="#4ecdc4" strokeWidth={2} dash={[6, 4]} />
               )}
 
               {pathPoints.length > 1 && (
@@ -1912,6 +2253,17 @@ export default function VttClient() {
                   listening={false}
                 />
               ))}
+
+              {measurementDistance && (
+                <Text
+                  x={measurementDistance.mid.x + 6}
+                  y={measurementDistance.mid.y - 16}
+                  text={measurementDistance.feet ? `${formatFeet(measurementDistance.feet)} ft` : `${Math.round(measurementDistance.px)} px`}
+                  fontSize={12}
+                  fill="#c9f6f4"
+                  listening={false}
+                />
+              )}
             </Layer>
 
             <Layer>
@@ -1928,10 +2280,17 @@ export default function VttClient() {
                   onClick={(event) => {
                     event.cancelBubble = true
                     setSelectedTokenId(token.id)
+                    if (token.role === 'player' && viewMode === 'player') {
+                      setFocusedPlayerTokenId(token.id)
+                    }
+                    if (token.role === 'npc') {
+                      setSelectedNpcTokenId(token.id)
+                    }
                     setTokenDraft({
                       name: token.name,
                       size: token.size,
                       ringColor: token.ringColor,
+                      darkvision: Boolean(token.darkvision),
                     })
                   }}
                   onDragEnd={(event) => onTokenDragEnd(token.id, event)}
@@ -1952,18 +2311,6 @@ export default function VttClient() {
                 />
               ))}
 
-              {visiblePings.map((ping) => (
-                <Circle
-                  key={ping.id}
-                  x={ping.x}
-                  y={ping.y}
-                  radius={ping.radius}
-                  stroke="#ff4f72"
-                  strokeWidth={ping.strokeWidth}
-                  opacity={ping.opacity}
-                  listening={false}
-                />
-              ))}
             </Layer>
 
             <Layer listening={false}>
@@ -1980,6 +2327,20 @@ export default function VttClient() {
                 />
               ))}
             </Layer>
+
+            <Layer listening={false}>
+              {visiblePings.map((ping) => (
+                <Circle
+                  key={ping.id}
+                  x={ping.x}
+                  y={ping.y}
+                  radius={ping.radius}
+                  stroke="#ff4f72"
+                  strokeWidth={ping.strokeWidth}
+                  opacity={ping.opacity}
+                />
+              ))}
+            </Layer>
             </Stage>
           </div>
         )}
@@ -1988,7 +2349,7 @@ export default function VttClient() {
           <span>Map: {activeMap?.name ?? 'none'}</span>
           <span>
             Scale: {feetPerPx ? `${formatFeet(feetPerPx * 100)} ft / 100px` : 'not calibrated'}
-            {measurementFeet ? ` | Measure: ${formatFeet(measurementFeet)} ft` : ''}
+            {measurementDistance?.feet ? ` | Measure: ${formatFeet(measurementDistance.feet)} ft` : ''}
           </span>
         </div>
       </section>
