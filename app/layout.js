@@ -38,8 +38,11 @@ export default function RootLayout({ children }) {
               <a href="/characters" style={navLinkStyle}>
                 🧙 Characters
               </a>
-              <a href="/vtt" style={navLinkStyle}>
-                🗺️ VTT
+              <a href="/vtt/dm" style={navLinkStyle}>
+                🗺️ VTT (DM)
+              </a>
+              <a href="/vtt/players" style={navLinkStyle}>
+                🎲 VTT (Players)
               </a>
             </nav>
           </header>

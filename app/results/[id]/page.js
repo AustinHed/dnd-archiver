@@ -51,7 +51,7 @@ export default async function ResultPage({ params }) {
               {result.mapIds.map((mapId) => (
                 <a
                   key={mapId}
-                  href={`/vtt?map=${mapId}`}
+                  href={`/vtt/dm?map=${mapId}`}
                   style={{
                     fontSize: '0.8rem',
                     color: '#c8a96e',

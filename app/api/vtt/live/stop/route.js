@@ -5,11 +5,17 @@ export const runtime = 'nodejs'
 
 export async function POST(request) {
   const body = await request.json().catch(() => ({}))
+  const actorRole = body?.actorRole === 'dm' ? 'dm' : 'player'
+  if (actorRole !== 'dm') {
+    return Response.json({ error: 'Only the Dungeon Master can update game state.' }, { status: 403 })
+  }
+
   const live = await getLiveSession()
 
   const nextLive = {
     ...live,
     active: false,
+    status: 'closed',
     stoppedAt: new Date().toISOString(),
   }
 

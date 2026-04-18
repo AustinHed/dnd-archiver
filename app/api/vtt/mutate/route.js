@@ -11,6 +11,79 @@ import {
 } from '@/lib/vttStore'
 
 export const runtime = 'nodejs'
+const DM_ONLY_OPS = new Set([
+  'addWall',
+  'updateWall',
+  'removeWall',
+  'restoreWall',
+  'addDarknessZone',
+  'removeDarknessZone',
+  'restoreDarknessZone',
+  'setFogEnabled',
+  'resetFogExplored',
+  'resetMapState',
+  'setCalibration',
+  'addToken',
+  'removeToken',
+])
+
+const PLAYER_UPDATE_TOKEN_ALLOWED_FIELDS = new Set(['id', 'x', 'y'])
+
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value))
+}
+
+function isProtectedShape(shape) {
+  return shape?.kind === 'barrier' || shape?.kind === 'darkness'
+}
+
+function validatePlayerMutation({ op, payload, currentState }) {
+  if (DM_ONLY_OPS.has(op)) {
+    return 'Only the Dungeon Master can perform that action.'
+  }
+
+  if (op === 'addShape') {
+    if (payload?.kind === 'barrier' || payload?.kind === 'darkness') {
+      return 'Only the Dungeon Master can create barriers or darkness zones.'
+    }
+    return null
+  }
+
+  if (op === 'updateShape') {
+    const shape = (currentState?.shapes ?? []).find((entry) => entry.id === payload?.id)
+    if (!shape) return null
+    if (isProtectedShape(shape)) {
+      return 'Only the Dungeon Master can modify barriers or darkness zones.'
+    }
+    return null
+  }
+
+  if (op === 'removeShape') {
+    const shape = (currentState?.shapes ?? []).find((entry) => entry.id === payload?.id)
+    if (!shape) return null
+    if (isProtectedShape(shape)) {
+      return 'Only the Dungeon Master can remove barriers or darkness zones.'
+    }
+    return null
+  }
+
+  if (op === 'updateToken') {
+    const token = (currentState?.tokens ?? []).find((entry) => entry.id === payload?.id)
+    if (!token) return 'Token not found.'
+    if (token.role !== 'player') return 'Only the Dungeon Master can move NPC tokens.'
+    if (!isFiniteNumber(payload?.x) || !isFiniteNumber(payload?.y)) {
+      return 'Players can only update token position.'
+    }
+
+    for (const key of Object.keys(payload ?? {})) {
+      if (!PLAYER_UPDATE_TOKEN_ALLOWED_FIELDS.has(key)) {
+        return 'Players can only update token position.'
+      }
+    }
+  }
+
+  return null
+}
 
 function ensurePoints(points, { min = 2 } = {}) {
   if (!Array.isArray(points) || points.length < min) {
@@ -90,6 +163,25 @@ function applyMutation(currentState, op, payload) {
       return {
         ...currentState,
         darknessZones: [...(currentState.darknessZones ?? []), shape],
+      }
+    }
+    case 'removeDarknessZone': {
+      const zoneId = payload?.id
+      if (!zoneId) return null
+      return {
+        ...currentState,
+        darknessZones: (currentState.darknessZones ?? []).filter((zone) => zone.id !== zoneId),
+      }
+    }
+    case 'restoreDarknessZone': {
+      const zone = normalizeShape({ ...payload?.zone, kind: 'darkness', closed: true }, {
+        kind: 'darkness',
+        fill: 'rgba(15, 15, 20, 0.45)',
+      })
+      if (!zone) return null
+      return {
+        ...currentState,
+        darknessZones: [...(currentState.darknessZones ?? []), zone],
       }
     }
     case 'addShape': {
@@ -208,6 +300,7 @@ function applyMutation(currentState, op, payload) {
             ringColor: payload?.ringColor ?? 'clear',
             role,
             darkvision: Boolean(payload?.darkvision),
+            hidden: role === 'npc' ? Boolean(payload?.hidden) : false,
             x,
             y,
           },
@@ -228,6 +321,7 @@ function applyMutation(currentState, op, payload) {
                 x: Number.isFinite(Number(payload.x)) ? Number(payload.x) : token.x,
                 y: Number.isFinite(Number(payload.y)) ? Number(payload.y) : token.y,
                 darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
+                hidden: payload?.hidden !== undefined ? Boolean(payload.hidden) : token.hidden,
               }
             : token
         )),
@@ -312,6 +406,7 @@ export async function POST(request) {
   const op = body?.op
   const payload = body?.payload ?? {}
   const actorId = body?.actorId ?? 'anonymous'
+  const actorRole = body?.actorRole === 'dm' ? 'dm' : 'player'
 
   if (!mapId || !op) {
     return Response.json({ error: 'mapId and op are required.' }, { status: 400 })
@@ -320,6 +415,10 @@ export async function POST(request) {
   const map = await getMap(mapId)
   if (!map) {
     return Response.json({ error: 'Map not found.' }, { status: 404 })
+  }
+
+  if (actorRole !== 'dm' && op === 'setCalibration') {
+    return Response.json({ error: 'Only the Dungeon Master can calibrate maps.' }, { status: 403 })
   }
 
   if (op === 'setCalibration') {
@@ -373,6 +472,13 @@ export async function POST(request) {
   }
 
   const current = await getOrCreateState(mapId)
+  if (actorRole !== 'dm') {
+    const error = validatePlayerMutation({ op, payload, currentState: current })
+    if (error) {
+      return Response.json({ error }, { status: 403 })
+    }
+  }
+
   const candidate = applyMutation(current, op, payload)
 
   if (!candidate) {

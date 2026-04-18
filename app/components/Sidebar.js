@@ -8,7 +8,7 @@ export default function Sidebar() {
   const [results, setResults] = useState(null) // null = loading
   const pathname = usePathname()
 
-  if (pathname === '/vtt') {
+  if (pathname?.startsWith('/vtt')) {
     return null
   }
 

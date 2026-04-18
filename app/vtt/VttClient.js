@@ -39,8 +39,8 @@ const TOOL_ICONS = {
   npcToken: '👤',
 }
 
-const MAP_SETUP_TOOL_IDS = ['select', 'wall', 'barrier', 'calibrate']
-const DM_TOOL_IDS = ['darkness', 'npcToken']
+const MAP_SETUP_TOOL_IDS = ['select', 'wall', 'darkness', 'calibrate']
+const DM_TOOL_IDS = ['npcToken']
 const GENERAL_TOOL_IDS = ['measure', 'shape', 'ping']
 const PLAYER_TOOL_IDS = ['move', 'path']
 
@@ -75,6 +75,7 @@ const SHAPE_COLOR_OPTIONS = [
 
 const SNAP_THRESHOLD_PX = 14
 const PING_FADE_MS = 3000
+const STAGING_AREA_WIDTH = 260
 
 function resolvePdfWorkerSrc(version) {
   try {
@@ -236,8 +237,8 @@ function getCircleGeometry(shape) {
 
 function formatDistanceLabel(pxDistance, feetPerPx) {
   if (!Number.isFinite(pxDistance)) return ''
-  if (feetPerPx) return `${Math.round(pxDistance * feetPerPx)} ft`
-  return `${Math.round(pxDistance)} px`
+  if (!feetPerPx) return '— ft'
+  return `${Math.round(pxDistance * feetPerPx)} ft`
 }
 
 function rotatePointAroundCenter(point, center, angleDeg) {
@@ -557,6 +558,12 @@ function barrierComponentFromId(barriers, startId) {
   return Array.from(visited)
 }
 
+function darknessComponentFromId(darknessZones, startId) {
+  if (!startId) return []
+  const exists = (darknessZones ?? []).some((zone) => zone.id === startId)
+  return exists ? [startId] : []
+}
+
 function interpolatePointAlongPath(points, progress) {
   if (!points?.length) return null
   if (points.length === 1) return points[0]
@@ -608,10 +615,12 @@ function getClientId() {
   return next
 }
 
-export default function VttClient() {
+export default function VttClient({ mode = 'dm', initialMapId = '' }) {
+  const isDm = mode === 'dm'
+  const isPlayer = !isDm
   const [bundle, setBundle] = useState(null)
   const [results, setResults] = useState([])
-  const [tool, setTool] = useState('move')
+  const [tool, setTool] = useState(isDm ? 'select' : 'move')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -625,7 +634,6 @@ export default function VttClient() {
   const [pointerPosition, setPointerPosition] = useState(null)
   const [mapZoom, setMapZoom] = useState(1)
   const [showDarknessZones, setShowDarknessZones] = useState(true)
-  const [showBarriers, setShowBarriers] = useState(true)
   const [mapUndoStack, setMapUndoStack] = useState([])
   const [selectedStructure, setSelectedStructure] = useState({ kind: null, ids: [] })
   const [structureDragOffset, setStructureDragOffset] = useState(null)
@@ -634,14 +642,13 @@ export default function VttClient() {
   const [shapeDraftColor, setShapeDraftColor] = useState('blue')
   const [selectedShapeColor, setSelectedShapeColor] = useState('blue')
   const [selectedTokenId, setSelectedTokenId] = useState('')
-  const [focusedPlayerTokenId, setFocusedPlayerTokenId] = useState('dm')
+  const [focusedPlayerTokenId, setFocusedPlayerTokenId] = useState(isDm ? 'dm' : '')
   const [partyCharacters, setPartyCharacters] = useState([])
-  const [selectedPartyCharacter, setSelectedPartyCharacter] = useState('')
   const [selectedNpcTokenId, setSelectedNpcTokenId] = useState('')
   const [tokenDraft, setTokenDraft] = useState({ name: 'Token', size: 'medium', ringColor: 'clear', darkvision: false })
-  const [npcTokenDraft, setNpcTokenDraft] = useState({ name: 'NPC', size: 'medium', ringColor: 'red', darkvision: false })
+  const [npcTokenDraft, setNpcTokenDraft] = useState({ name: 'NPC', size: 'medium', ringColor: 'red', darkvision: false, hidden: false })
   const [character, setCharacter] = useState({ moveSpeed: 30, darkvision: false })
-  const [viewMode, setViewMode] = useState('player')
+  const [viewMode, setViewMode] = useState(isDm ? 'dm' : 'player')
   const [clientId, setClientId] = useState('')
   const [mapRenderError, setMapRenderError] = useState('')
   const [pingClock, setPingClock] = useState(Date.now())
@@ -659,11 +666,16 @@ export default function VttClient() {
   const [stageHeight, setStageHeight] = useState(720)
   const exploredSyncRef = useRef('')
   const rotateDragRef = useRef(null)
+  const previousNpcHiddenRef = useRef({})
+  const pathAnimatingRef = useRef(false)
 
   const refresh = useCallback(async (customClientId = clientId) => {
-    const liveUrl = customClientId
-      ? `/api/vtt/live?clientId=${encodeURIComponent(customClientId)}`
-      : '/api/vtt/live'
+    const query = new URLSearchParams()
+    query.set('role', isDm ? 'dm' : 'player')
+    if (customClientId) {
+      query.set('clientId', customClientId)
+    }
+    const liveUrl = `/api/vtt/live?${query.toString()}`
 
     const [liveRes, resultsRes] = await Promise.all([
       fetch(liveUrl, { cache: 'no-store' }),
@@ -690,7 +702,7 @@ export default function VttClient() {
     }
 
     return liveJson
-  }, [clientId])
+  }, [clientId, isDm])
 
   useEffect(() => {
     setClientId(getClientId())
@@ -712,7 +724,6 @@ export default function VttClient() {
 
           if (nextCharacters.length) {
             const firstName = nextCharacters[0].name
-            setSelectedPartyCharacter((prev) => prev || firstName)
             setTokenDraft((prev) => ({
               ...prev,
               name: prev.name === 'Token' ? firstName : prev.name,
@@ -739,7 +750,9 @@ export default function VttClient() {
         if (!mounted) return
 
         const firstPlayerId = nextBundle?.activeState?.tokens?.find((token) => token.role === 'player')?.id ?? ''
-        const firstTokenId = firstPlayerId || (nextBundle?.activeState?.tokens?.[0]?.id ?? '')
+        const firstTokenId = isPlayer
+          ? firstPlayerId
+          : (firstPlayerId || (nextBundle?.activeState?.tokens?.[0]?.id ?? ''))
         setSelectedTokenId((prev) => prev || firstTokenId)
         setFocusedPlayerTokenId((prev) => (prev === 'dm' ? prev : (prev || firstPlayerId || 'dm')))
       } catch (err) {
@@ -754,7 +767,7 @@ export default function VttClient() {
     return () => {
       mounted = false
     }
-  }, [refresh, clientId])
+  }, [refresh, clientId, isPlayer])
 
   useEffect(() => {
     const tokens = bundle?.activeState?.tokens ?? []
@@ -766,19 +779,28 @@ export default function VttClient() {
     }
 
     const firstPlayer = tokens.find((token) => token.role === 'player')
-    setSelectedTokenId((prev) => prev || firstPlayer?.id || tokens[0].id)
+    setSelectedTokenId((prev) => prev || firstPlayer?.id || (isDm ? tokens[0].id : ''))
 
     setFocusedPlayerTokenId((prev) => {
       if (prev === 'dm') return 'dm'
       if (prev && tokens.some((token) => token.id === prev && token.role === 'player')) return prev
-      return firstPlayer?.id || 'dm'
+      return firstPlayer?.id || (isDm ? 'dm' : '')
     })
 
     setSelectedNpcTokenId((prev) => {
       if (prev && tokens.some((token) => token.id === prev && token.role === 'npc')) return prev
       return tokens.find((token) => token.role === 'npc')?.id ?? ''
     })
-  }, [bundle?.activeState?.tokens])
+  }, [bundle?.activeState?.tokens, isDm])
+
+  useEffect(() => {
+    if (isDm && viewMode !== 'dm') {
+      setViewMode('dm')
+    }
+    if (isPlayer && viewMode !== 'player') {
+      setViewMode('player')
+    }
+  }, [isDm, isPlayer, viewMode])
 
   useEffect(() => {
     setDraftPoints([])
@@ -796,14 +818,14 @@ export default function VttClient() {
   useEffect(() => {
     if (!bundle?.activeMap) return
 
-    setStageWidth(Math.max(800, bundle.activeMap.width))
+    setStageWidth(Math.max(800, bundle.activeMap.width + (isDm ? STAGING_AREA_WIDTH : 0)))
     setStageHeight(Math.max(500, bundle.activeMap.height))
-  }, [bundle?.activeMap])
+  }, [bundle?.activeMap, isDm])
 
   useEffect(() => {
     if (!bundle) return
-    setStartMapId(bundle.live?.activeMapId ?? bundle.maps?.[0]?.id ?? '')
-  }, [bundle])
+    setStartMapId(initialMapId || bundle.live?.activeMapId || bundle.maps?.[0]?.id || '')
+  }, [bundle, initialMapId])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -868,6 +890,7 @@ export default function VttClient() {
 
   const activeMap = bundle?.activeMap ?? null
   const activeState = bundle?.activeState ?? null
+  const sessionStatus = bundle?.live?.status ?? (bundle?.live?.active ? 'active' : 'closed')
 
   const feetPerPx = useMemo(() => feetPerPixelFromCalibration(activeMap?.calibration), [activeMap?.calibration])
 
@@ -916,6 +939,7 @@ export default function VttClient() {
       size: token.size || 'medium',
       ringColor: token.ringColor || 'red',
       darkvision: Boolean(token.darkvision),
+      hidden: Boolean(token.hidden),
     })
   }, [npcTokens, selectedNpcTokenId])
 
@@ -931,6 +955,11 @@ export default function VttClient() {
 
   const selectedBarrierIds = useMemo(
     () => new Set(selectedStructure.kind === 'barrier' ? selectedStructure.ids : []),
+    [selectedStructure.ids, selectedStructure.kind],
+  )
+
+  const selectedDarknessIds = useMemo(
+    () => new Set(selectedStructure.kind === 'darkness' ? selectedStructure.ids : []),
     [selectedStructure.ids, selectedStructure.kind],
   )
 
@@ -956,8 +985,17 @@ export default function VttClient() {
       if (nextIds.length !== selectedStructure.ids.length) {
         setSelectedStructure(nextIds.length ? { kind: 'barrier', ids: nextIds } : { kind: null, ids: [] })
       }
+      return
     }
-  }, [activeState?.walls, barrierShapes, selectedStructure.ids, selectedStructure.kind])
+
+    if (selectedStructure.kind === 'darkness') {
+      const validIds = new Set((activeState?.darknessZones ?? []).map((zone) => zone.id))
+      const nextIds = selectedStructure.ids.filter((id) => validIds.has(id))
+      if (nextIds.length !== selectedStructure.ids.length) {
+        setSelectedStructure(nextIds.length ? { kind: 'darkness', ids: nextIds } : { kind: null, ids: [] })
+      }
+    }
+  }, [activeState?.darknessZones, activeState?.walls, barrierShapes, selectedStructure.ids, selectedStructure.kind])
 
   const visibility = useMemo(() => {
     if (!activeMap || !activeState || !visionToken) return null
@@ -1031,6 +1069,7 @@ export default function VttClient() {
   useEffect(() => {
     if (!activeMap || !activeState?.fog?.enabled || !visibility) return
     if (!visibility.visible.length) return
+    if (pathAnimatingRef.current) return
 
     const payload = {
       mapId: activeMap.id,
@@ -1068,6 +1107,7 @@ export default function VttClient() {
         op,
         payload,
         actorId: clientId,
+        actorRole: isDm ? 'dm' : 'player',
       }),
     })
 
@@ -1092,28 +1132,28 @@ export default function VttClient() {
     }
 
     return data
-  }, [activeMap, clientId])
+  }, [activeMap, clientId, isDm])
 
-  const startSession = useCallback(async (mapId) => {
+  const setSessionState = useCallback(async ({ mapId, status }) => {
     const res = await fetch('/api/vtt/live/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mapId, actorId: clientId }),
+      body: JSON.stringify({ mapId, status, actorId: clientId, actorRole: isDm ? 'dm' : 'player' }),
     })
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
-      throw new Error(body.error || 'Failed to start session.')
+      throw new Error(body.error || 'Failed to update game state.')
     }
 
     await refresh()
-  }, [refresh, clientId])
+  }, [clientId, isDm, refresh])
 
   const stopSession = useCallback(async () => {
     const res = await fetch('/api/vtt/live/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ actorId: clientId }),
+      body: JSON.stringify({ actorId: clientId, actorRole: isDm ? 'dm' : 'player' }),
     })
 
     if (!res.ok) {
@@ -1122,7 +1162,13 @@ export default function VttClient() {
     }
 
     await refresh()
-  }, [refresh, clientId])
+  }, [clientId, isDm, refresh])
+
+  useEffect(() => {
+    if (!isDm || !initialMapId || !bundle) return
+    if (bundle.live?.activeMapId === initialMapId) return
+    setSessionState({ mapId: initialMapId, status: 'preparing' }).catch((err) => setError(err.message))
+  }, [bundle, initialMapId, isDm, setSessionState])
 
   const uploadPdfMap = useCallback(async (file) => {
     if (!file) return
@@ -1271,7 +1317,7 @@ export default function VttClient() {
   }, [activeMap, callMutation, character.darkvision, character.moveSpeed, clientId])
 
   const placeToken = useCallback(async (point) => {
-    const playerName = selectedPartyCharacter || tokenDraft.name || 'Player'
+    const playerName = tokenDraft.name || 'Player'
     const existingPlayer = (activeState?.tokens ?? []).find((token) => token.role === 'player' && token.name === playerName)
 
     try {
@@ -1298,9 +1344,10 @@ export default function VttClient() {
     } catch (err) {
       setError(err.message)
     }
-  }, [activeState?.tokens, callMutation, selectedPartyCharacter, tokenDraft.darkvision, tokenDraft.name, tokenDraft.ringColor])
+  }, [activeState?.tokens, callMutation, tokenDraft.darkvision, tokenDraft.name, tokenDraft.ringColor])
 
   const placeNpcToken = useCallback(async (point) => {
+    if (!isDm) return
     try {
       await callMutation('addToken', {
         x: point.x,
@@ -1309,20 +1356,26 @@ export default function VttClient() {
         size: npcTokenDraft.size,
         ringColor: npcTokenDraft.ringColor,
         darkvision: Boolean(npcTokenDraft.darkvision),
+        hidden: Boolean(npcTokenDraft.hidden),
         role: 'npc',
       })
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, npcTokenDraft])
+  }, [callMutation, isDm, npcTokenDraft])
 
   const onStageClick = useCallback(async (event) => {
-    if (!activeMap || !bundle?.live?.active) return
+    if (!activeMap) return
+    if (isPlayer && sessionStatus !== 'active') return
     const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
 
-    if (tool === 'wall' || tool === 'darkness' || tool === 'barrier' || tool === 'calibrate') {
-      if ((tool === 'wall' || tool === 'barrier' || tool === 'darkness') && draftPoints.length >= 2) {
+    if (!isDm && (tool === 'wall' || tool === 'darkness' || tool === 'calibrate' || tool === 'token' || tool === 'npcToken')) {
+      return
+    }
+
+    if (tool === 'wall' || tool === 'darkness' || tool === 'calibrate') {
+      if ((tool === 'wall' || tool === 'darkness') && draftPoints.length >= 2) {
         const snapPoint = findSnapPoint(draftPoints, pointer)
         if (snapPoint) {
           await commitDraftPoints([...draftPoints, snapPoint], tool)
@@ -1353,16 +1406,19 @@ export default function VttClient() {
     }
 
     if (tool === 'token') {
+      if (!isDm) return
       await placeToken(pointer)
       return
     }
 
     if (tool === 'npcToken') {
+      if (!isDm) return
       await placeNpcToken(pointer)
       return
     }
 
     if (tool === 'path') {
+      if (isPlayer && selectedToken?.role !== 'player') return
       setPathPoints((prev) => {
         if (!prev.length && selectedToken) {
           return [{ x: selectedToken.x, y: selectedToken.y }, { x: pointer.x, y: pointer.y }]
@@ -1384,20 +1440,20 @@ export default function VttClient() {
         setError(err.message)
       }
     }
-  }, [activeMap, bundle?.live?.active, callMutation, commitDraftPoints, draftPoints, mapZoom, placeNpcToken, placeToken, selectedToken, shapeDraftColor, shapeDraftType, tool])
+  }, [activeMap, callMutation, commitDraftPoints, draftPoints, isDm, isPlayer, mapZoom, placeNpcToken, placeToken, selectedToken, sessionStatus, shapeDraftColor, shapeDraftType, tool])
 
   const onStagePointerDown = useCallback((event) => {
-    if (tool !== 'measure' || !activeMap || !bundle?.live?.active) return
+    if (tool !== 'measure' || !activeMap || (isPlayer && sessionStatus !== 'active')) return
     const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
     setMeasureDrag({ start: { x: pointer.x, y: pointer.y }, end: { x: pointer.x, y: pointer.y } })
-  }, [activeMap, bundle?.live?.active, mapZoom, tool])
+  }, [activeMap, isPlayer, mapZoom, sessionStatus, tool])
 
   const onStagePointerMove = useCallback((event) => {
     const pointer = getMapPointerFromEvent(event, mapZoom)
     if (!pointer) return
 
-    if (tool === 'wall' || tool === 'barrier' || tool === 'darkness' || tool === 'calibrate') {
+    if (tool === 'wall' || tool === 'darkness' || tool === 'calibrate') {
       setPointerPosition({ x: pointer.x, y: pointer.y })
     }
 
@@ -1410,6 +1466,10 @@ export default function VttClient() {
   }, [tool])
 
   const onTokenDragEnd = useCallback(async (tokenId, event) => {
+    const token = (activeState?.tokens ?? []).find((entry) => entry.id === tokenId)
+    if (!token) return
+    if (isPlayer && token.role !== 'player') return
+
     const { x, y } = event.target.position()
 
     try {
@@ -1417,15 +1477,17 @@ export default function VttClient() {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation])
+  }, [activeState?.tokens, callMutation, isPlayer])
 
   const finalizePathMove = useCallback(async () => {
     if (!selectedToken || pathPoints.length < 2) return
+    if (isPlayer && selectedToken.role !== 'player') return
 
     const tokenId = selectedToken.id
     const route = pathPoints.map((point) => ({ x: point.x, y: point.y }))
     const destination = pathPoints[pathPoints.length - 1]
 
+    pathAnimatingRef.current = true
     try {
       const totalPx = route.slice(1).reduce((sum, point, index) => (
         sum + distancePx(route[index], point)
@@ -1473,8 +1535,10 @@ export default function VttClient() {
       setPathPoints([])
     } catch (err) {
       setError(err.message)
+    } finally {
+      pathAnimatingRef.current = false
     }
-  }, [callMutation, pathPoints, selectedToken])
+  }, [callMutation, isPlayer, pathPoints, selectedToken])
 
   const updateShapeColor = useCallback(async (shapeId, colorName) => {
     try {
@@ -1517,6 +1581,13 @@ export default function VttClient() {
     setStructureDragOffset(null)
   }, [barrierShapes])
 
+  const selectDarknessStructure = useCallback((zoneId) => {
+    const ids = darknessComponentFromId(activeState?.darknessZones ?? [], zoneId)
+    setSelectedStructure({ kind: 'darkness', ids })
+    setSelectedShapeId('')
+    setStructureDragOffset(null)
+  }, [activeState?.darknessZones])
+
   const removeSelectedStructure = useCallback(async () => {
     if (!selectedStructure.kind || !selectedStructure.ids.length) return
     try {
@@ -1538,18 +1609,27 @@ export default function VttClient() {
           ...prev,
         ].slice(0, 20))
         await Promise.all(barriersToRemove.map((shape) => callMutation('removeShape', { id: shape.id })))
+      } else if (selectedStructure.kind === 'darkness') {
+        const darknessById = new Map((activeState?.darknessZones ?? []).map((zone) => [zone.id, zone]))
+        const zonesToRemove = selectedStructure.ids.map((id) => darknessById.get(id)).filter(Boolean)
+        if (!zonesToRemove.length) return
+        setMapUndoStack((prev) => [
+          { op: 'batchRestoreDarkness', payload: { zones: zonesToRemove.map((zone) => ({ ...zone })) } },
+          ...prev,
+        ].slice(0, 20))
+        await Promise.all(zonesToRemove.map((zone) => callMutation('removeDarknessZone', { id: zone.id })))
       }
       setSelectedStructure({ kind: null, ids: [] })
       setStructureDragOffset(null)
     } catch (err) {
       setError(err.message)
     }
-  }, [activeState?.walls, barrierShapes, callMutation, selectedStructure.ids, selectedStructure.kind])
+  }, [activeState?.darknessZones, activeState?.walls, barrierShapes, callMutation, selectedStructure.ids, selectedStructure.kind])
 
   const resetMap = useCallback(async () => {
     if (!activeMap) return
     if (typeof window !== 'undefined') {
-      const confirmed = window.confirm('Reset this map? This clears walls, barriers, shapes, darkness zones, tokens, fog memory, and pings for this map.')
+      const confirmed = window.confirm('Reset this map? This clears walls, shapes, darkness zones, tokens, fog memory, and pings for this map.')
       if (!confirmed) return
     }
 
@@ -1566,13 +1646,13 @@ export default function VttClient() {
       setPathPoints([])
       setMeasureDrag(null)
       setShapePreview(null)
-      setFocusedPlayerTokenId('dm')
-      setViewMode('dm')
+      setFocusedPlayerTokenId(isDm ? 'dm' : '')
+      setViewMode(isDm ? 'dm' : 'player')
       setLastKnownNpcByViewer({})
     } catch (err) {
       setError(err.message)
     }
-  }, [activeMap, callMutation])
+  }, [activeMap, callMutation, isDm])
 
   const undoMapEdit = useCallback(async () => {
     const action = mapUndoStack[0]
@@ -1584,6 +1664,8 @@ export default function VttClient() {
         await Promise.all((action.payload?.walls ?? []).map((wall) => callMutation('restoreWall', { wall })))
       } else if (action.op === 'batchAddShapes') {
         await Promise.all((action.payload?.shapes ?? []).map((shape) => callMutation('addShape', shape)))
+      } else if (action.op === 'batchRestoreDarkness') {
+        await Promise.all((action.payload?.zones ?? []).map((zone) => callMutation('restoreDarknessZone', { zone })))
       } else {
         await callMutation(action.op, action.payload)
       }
@@ -1594,6 +1676,7 @@ export default function VttClient() {
 
   const updateNpcToken = useCallback(async () => {
     if (!selectedNpcTokenId) return
+    if (!isDm) return
     try {
       await callMutation('updateToken', {
         id: selectedNpcTokenId,
@@ -1601,15 +1684,17 @@ export default function VttClient() {
         size: npcTokenDraft.size,
         ringColor: npcTokenDraft.ringColor,
         darkvision: Boolean(npcTokenDraft.darkvision),
+        hidden: Boolean(npcTokenDraft.hidden),
         role: 'npc',
       })
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, npcTokenDraft.darkvision, npcTokenDraft.name, npcTokenDraft.ringColor, npcTokenDraft.size, selectedNpcTokenId])
+  }, [callMutation, isDm, npcTokenDraft.darkvision, npcTokenDraft.hidden, npcTokenDraft.name, npcTokenDraft.ringColor, npcTokenDraft.size, selectedNpcTokenId])
 
   const deleteNpcToken = useCallback(async () => {
     if (!selectedNpcTokenId) return
+    if (!isDm) return
     try {
       const removedId = selectedNpcTokenId
       await callMutation('removeToken', { id: selectedNpcTokenId })
@@ -1626,7 +1711,7 @@ export default function VttClient() {
     } catch (err) {
       setError(err.message)
     }
-  }, [callMutation, selectedNpcTokenId])
+  }, [callMutation, isDm, selectedNpcTokenId])
 
   const linkMap = useCallback(async () => {
     if (!activeMap || !linkResultId) return
@@ -1651,11 +1736,14 @@ export default function VttClient() {
   }, [])
 
   const selectTool = useCallback((toolId) => {
+    if (!isDm && (MAP_SETUP_TOOL_IDS.includes(toolId) || DM_TOOL_IDS.includes(toolId) || toolId === 'token' || toolId === 'npcToken')) {
+      return
+    }
     setTool(toolId)
     if (toolId !== 'select') {
       setStructureDragOffset(null)
     }
-  }, [])
+  }, [isDm])
 
   const zoomIn = useCallback(() => {
     setMapZoom((prev) => clamp(prev + 0.2, 0.6, 3))
@@ -1669,13 +1757,8 @@ export default function VttClient() {
     setMapZoom(1)
   }, [])
 
-  const selectPartyCharacter = useCallback((name) => {
-    setSelectedPartyCharacter(name)
-    if (!name) return
-    setTokenDraft((prev) => ({ ...prev, name }))
-  }, [])
-
   const selectFocusedPlayer = useCallback((value) => {
+    if (isPlayer && value === 'dm') return
     setFocusedPlayerTokenId(value)
     if (value === 'dm') {
       setViewMode('dm')
@@ -1684,7 +1767,7 @@ export default function VttClient() {
 
     setViewMode('player')
     setSelectedTokenId(value)
-  }, [])
+  }, [isPlayer])
 
   const selectNpcToken = useCallback((tokenId) => {
     setSelectedNpcTokenId(tokenId)
@@ -1696,6 +1779,36 @@ export default function VttClient() {
       size: token.size || 'medium',
       ringColor: token.ringColor || 'red',
       darkvision: Boolean(token.darkvision),
+      hidden: Boolean(token.hidden),
+    })
+  }, [npcTokens])
+
+  useEffect(() => {
+    const previous = previousNpcHiddenRef.current
+    const next = {}
+    const unhiddenNpcIds = []
+
+    for (const token of npcTokens) {
+      const hidden = Boolean(token.hidden)
+      next[token.id] = hidden
+      if (previous[token.id] && !hidden) {
+        unhiddenNpcIds.push(token.id)
+      }
+    }
+
+    previousNpcHiddenRef.current = next
+
+    if (!unhiddenNpcIds.length) return
+    setLastKnownNpcByViewer((prev) => {
+      const updated = {}
+      for (const [viewerId, memory] of Object.entries(prev)) {
+        const copy = { ...(memory ?? {}) }
+        for (const tokenId of unhiddenNpcIds) {
+          delete copy[tokenId]
+        }
+        updated[viewerId] = copy
+      }
+      return updated
     })
   }, [npcTokens])
 
@@ -1712,35 +1825,42 @@ export default function VttClient() {
     }
   }, [feetPerPx, measureDrag])
 
-  const fogRects = useMemo(() => {
-    if (!activeState?.fog?.enabled || !visibility) return []
+  const fogRenderData = useMemo(() => {
+    if (!activeState?.fog?.enabled || !visibility) return null
 
-    const visibleSet = new Set(visibility.visible)
+    const visibleSet = new Set(visibility.visible ?? [])
     const exploredSet = new Set(activeState.fog?.exploredCells ?? [])
-    const rects = []
+    const visibleRects = []
+    const exploredRects = []
+    const gridSize = visibility.gridSize
 
     for (let row = 0; row < visibility.rows; row += 1) {
       for (let col = 0; col < visibility.cols; col += 1) {
         const index = row * visibility.cols + col
-        if (visibleSet.has(index)) continue
-
-        const seen = exploredSet.has(index)
-        const fill = seen
-          ? (viewMode === 'dm' ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.52)')
-          : (viewMode === 'dm' ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.66)')
-
-        rects.push({
-          x: col * visibility.gridSize,
-          y: row * visibility.gridSize,
-          width: visibility.gridSize,
-          height: visibility.gridSize,
-          fill,
-          blur: viewMode === 'player' ? (seen ? 0 : 26) : 0,
-        })
+        const rect = {
+          x: col * gridSize,
+          y: row * gridSize,
+          width: gridSize,
+          height: gridSize,
+        }
+        if (visibleSet.has(index)) {
+          visibleRects.push(rect)
+          continue
+        }
+        if (exploredSet.has(index)) {
+          exploredRects.push(rect)
+        }
       }
     }
 
-    return rects
+    return {
+      visibleRects,
+      exploredRects,
+      unseenFill: viewMode === 'dm' ? 'rgba(0,0,0,0.56)' : 'rgba(0,0,0,0.78)',
+      exploredFill: viewMode === 'dm' ? 'rgba(0,0,0,0.30)' : 'rgba(0,0,0,0.58)',
+      cutoutRadius: Math.max(3, gridSize * 0.55),
+      cutoutBlur: viewMode === 'player' ? 70 : 45,
+    }
   }, [activeState?.fog, viewMode, visibility])
 
   const visibleTokenIds = useMemo(() => {
@@ -1771,9 +1891,22 @@ export default function VttClient() {
     return ids
   }, [activeState?.fog?.enabled, activeState?.tokens, viewMode, visibility, visionToken?.id])
 
+  const renderTokenIds = useMemo(() => {
+    if (!activeState?.tokens?.length) return new Set()
+    const ids = new Set(visibleTokenIds)
+    if (!isPlayer) return ids
+
+    for (const token of activeState.tokens) {
+      if (token.role === 'npc' && token.hidden) {
+        ids.delete(token.id)
+      }
+    }
+    return ids
+  }, [activeState?.tokens, isPlayer, visibleTokenIds])
+
   useEffect(() => {
     if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return
-    const visibleNpcs = npcTokens.filter((token) => visibleTokenIds.has(token.id))
+    const visibleNpcs = npcTokens.filter((token) => !token.hidden && renderTokenIds.has(token.id))
     if (!visibleNpcs.length) return
 
     setLastKnownNpcByViewer((prev) => {
@@ -1799,17 +1932,17 @@ export default function VttClient() {
       if (!changed) return prev
       return { ...prev, [visionToken.id]: nextViewerState }
     })
-  }, [focusedPlayerTokenId, npcTokens, viewMode, visionToken?.id, visibleTokenIds])
+  }, [focusedPlayerTokenId, npcTokens, renderTokenIds, viewMode, visionToken?.id])
 
   const ghostNpcTokens = useMemo(() => {
     if (viewMode !== 'player' || focusedPlayerTokenId === 'dm' || !visionToken?.id) return []
     const viewerMemory = lastKnownNpcByViewer[visionToken.id] ?? {}
     const liveNpcIds = new Set(npcTokens.map((token) => token.id))
-    return Object.values(viewerMemory).filter((token) => liveNpcIds.has(token.id) && !visibleTokenIds.has(token.id))
-  }, [focusedPlayerTokenId, lastKnownNpcByViewer, npcTokens, viewMode, visionToken?.id, visibleTokenIds])
+    return Object.values(viewerMemory).filter((token) => liveNpcIds.has(token.id) && !renderTokenIds.has(token.id))
+  }, [focusedPlayerTokenId, lastKnownNpcByViewer, npcTokens, renderTokenIds, viewMode, visionToken?.id])
 
   const draftSnapPoint = useMemo(() => {
-    if ((tool !== 'wall' && tool !== 'barrier' && tool !== 'darkness') || !pointerPosition || draftPoints.length < 2) return null
+    if ((tool !== 'wall' && tool !== 'darkness') || !pointerPosition || draftPoints.length < 2) return null
     return findSnapPoint(draftPoints, pointerPosition)
   }, [draftPoints, pointerPosition, tool])
 
@@ -1842,10 +1975,12 @@ export default function VttClient() {
     if (pathPoints.length < 2) return null
     const last = pathPoints[pathPoints.length - 1]
     if (!last) return null
+    const text = feetPerPx ? `${Math.round(pathFeet)} ft` : '— ft'
     return {
       x: last.x + 8,
       y: last.y - 18,
-      text: feetPerPx ? `${Math.round(pathFeet)} ft` : `${Math.round(pathPoints.slice(1).reduce((sum, point, index) => sum + distancePx(pathPoints[index], point), 0))} px`,
+      text,
+      width: Math.max(44, (text.length * 7) + 10),
     }
   }, [feetPerPx, pathFeet, pathPoints])
 
@@ -1879,9 +2014,9 @@ export default function VttClient() {
     return <p style={{ color: '#888' }}>Loading VTT...</p>
   }
 
-  const sessionActive = Boolean(bundle?.live?.active)
   const zoomedStageWidth = Math.round(stageWidth * mapZoom)
   const zoomedStageHeight = Math.round(stageHeight * mapZoom)
+  const canRenderBoard = Boolean(activeMap) && (isDm ? sessionStatus !== 'closed' : sessionStatus === 'active')
 
   return (
     <main style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '1rem' }}>
@@ -1905,6 +2040,7 @@ export default function VttClient() {
           </div>
         )}
 
+        {isDm && (
         <section style={menuSectionStyle}>
           <button type="button" onClick={() => toggleMenu('mapSetup')} style={menuToggleStyle}>
             <span>Map Setup</span>
@@ -1914,7 +2050,11 @@ export default function VttClient() {
             <div style={menuBodyStyle}>
               <select
                 value={startMapId}
-                onChange={(event) => setStartMapId(event.target.value)}
+                onChange={(event) => {
+                  const nextMapId = event.target.value
+                  setStartMapId(nextMapId)
+                  setSessionState({ mapId: nextMapId, status: 'preparing' }).catch((err) => setError(err.message))
+                }}
                 style={inputStyle}
               >
                 <option value="">Select map</option>
@@ -1926,20 +2066,26 @@ export default function VttClient() {
               </select>
               <div style={iconTileGridStyle}>
                 <IconTileButton
+                  icon="🧰"
+                  label="DM Preparing"
+                  onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'preparing' }).catch((err) => setError(err.message))}
+                  tone={sessionStatus === 'preparing' ? 'success' : 'neutral'}
+                />
+                <IconTileButton
                   icon="▶️"
-                  label="Start Session"
-                  onClick={() => startSession(startMapId || activeMap?.id)}
+                  label="Active"
+                  onClick={() => setSessionState({ mapId: startMapId || activeMap?.id, status: 'active' }).catch((err) => setError(err.message))}
                   tone="success"
                 />
                 <IconTileButton
                   icon="⏹️"
-                  label="Stop Session"
-                  onClick={stopSession}
+                  label="Closed"
+                  onClick={() => stopSession().catch((err) => setError(err.message))}
                   tone="danger"
                 />
               </div>
-              <p style={{ margin: 0, color: sessionActive ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
-                {sessionActive ? 'Session is live for everyone on this page.' : 'Session is currently inactive.'}
+              <p style={{ margin: 0, color: sessionStatus === 'active' ? '#89d089' : '#a88', fontSize: '0.78rem' }}>
+                Status: {sessionStatus === 'active' ? 'Active' : sessionStatus === 'preparing' ? 'DM Preparing' : 'Closed'}
               </p>
 
               <div style={subSectionStyle}>
@@ -1996,7 +2142,7 @@ export default function VttClient() {
                     />
                   ))}
                 </div>
-                {(tool === 'wall' || tool === 'barrier' || tool === 'calibrate') && (
+                {(tool === 'wall' || tool === 'darkness' || tool === 'calibrate') && (
                   <>
                     <div style={{ ...iconTileGridStyle, marginTop: '0.45rem' }}>
                       <IconTileButton icon="✅" label={tool === 'calibrate' ? 'Save Calibration' : 'Commit Draft'} onClick={finalizeDraft} tone="success" size="small" />
@@ -2022,9 +2168,9 @@ export default function VttClient() {
               </div>
 
               <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Walls + Barriers</div>
+                <div style={subSectionTitleStyle}>Walls + Darkness</div>
                 <p style={{ margin: 0, color: '#8c8c8c', fontSize: '0.75rem' }}>
-                  Use `Select` tool, then click a wall/barrier to select a contiguous group.
+                  Use `Select` tool, then click a wall or darkness zone to select.
                 </p>
                 <p style={{ margin: '0.25rem 0 0', color: '#8c8c8c', fontSize: '0.75rem' }}>
                   Selected: {selectedStructure.kind ? `${selectedStructure.kind} (${selectedStructure.ids.length})` : 'none'}
@@ -2036,13 +2182,15 @@ export default function VttClient() {
                   <IconTileButton icon="🗺️" label="Reset Map" onClick={resetMap} disabled={!activeMap} tone="danger" fullWidth />
                 </div>
                 <p style={{ margin: '0.35rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                  Click and drag selected walls/barriers on the map to reposition. Press Delete/Backspace to remove.
+                  Click and drag selected walls on the map to reposition. Press Delete/Backspace to remove selected walls or darkness.
                 </p>
               </div>
             </div>
           )}
         </section>
+        )}
 
+        {isDm && (
         <section style={menuSectionStyle}>
           <button type="button" onClick={() => toggleMenu('dungeonMaster')} style={menuToggleStyle}>
             <span>Dungeon Master</span>
@@ -2128,6 +2276,14 @@ export default function VttClient() {
                     />
                     NPC has dark vision
                   </label>
+                  <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(npcTokenDraft.hidden)}
+                      onChange={(event) => setNpcTokenDraft((prev) => ({ ...prev, hidden: event.target.checked }))}
+                    />
+                    Hidden from players
+                  </label>
                 </div>
               </div>
 
@@ -2147,6 +2303,7 @@ export default function VttClient() {
             </div>
           )}
         </section>
+        )}
 
         <section style={menuSectionStyle}>
           <button type="button" onClick={() => toggleMenu('generalMapTools')} style={menuToggleStyle}>
@@ -2177,14 +2334,6 @@ export default function VttClient() {
                         onChange={(event) => setShowDarknessZones(event.target.checked)}
                       />
                       Show darkness zones
-                    </label>
-                    <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem' }}>
-                      <input
-                        type="checkbox"
-                        checked={showBarriers}
-                        onChange={(event) => setShowBarriers(event.target.checked)}
-                      />
-                      Show barriers
                     </label>
                     <div style={{ marginBottom: '0.35rem' }}>
                       <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
@@ -2271,6 +2420,7 @@ export default function VttClient() {
 
               <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Focused View</div>
+                {isDm && (
                 <IconTileButton
                   icon="🛡️"
                   label="Dungeon Master View"
@@ -2279,6 +2429,7 @@ export default function VttClient() {
                   size="large"
                   fullWidth
                 />
+                )}
                 <div style={{ ...toolGridStyle, marginTop: '0.35rem' }}>
                   {playerTokens.map((token) => (
                     <IconTileButton
@@ -2325,92 +2476,6 @@ export default function VttClient() {
               )}
 
               <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Player Token Setup</div>
-                <select value={selectedPartyCharacter} onChange={(event) => selectPartyCharacter(event.target.value)} style={inputStyle}>
-                  <option value="">Select party character</option>
-                  {partyCharacters.map((entry) => (
-                    <option key={entry.slug || entry.name} value={entry.name}>{entry.name}</option>
-                  ))}
-                </select>
-                <div style={{ marginTop: '0.4rem' }}>
-                  <div style={{ ...subSectionTitleStyle, marginBottom: '0.2rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.72rem' }}>Default Ring Color</div>
-                  <div style={ringButtonRowStyle}>
-                    {Object.entries(RING_COLORS).map(([colorId, colorValue]) => (
-                      <button
-                        key={`new-player-ring:${colorId}`}
-                        type="button"
-                        title={`Ring ${colorId}`}
-                        onClick={() => setTokenDraft((prev) => ({ ...prev, ringColor: colorId }))}
-                        style={ringButtonStyle(tokenDraft.ringColor === colorId, colorValue)}
-                      />
-                    ))}
-                  </div>
-                </div>
-                <p style={{ margin: '0.4rem 0 0', color: '#777', fontSize: '0.75rem' }}>
-                  One token per party character. Ring color is applied automatically.
-                </p>
-              </div>
-
-              <div style={subSectionStyle}>
-                <div style={subSectionTitleStyle}>Update Existing Player Token</div>
-                <select
-                  value={selectedTokenId}
-                  onChange={(event) => {
-                    setSelectedTokenId(event.target.value)
-                    if (event.target.value) {
-                      selectFocusedPlayer(event.target.value)
-                    }
-                  }}
-                  style={inputStyle}
-                >
-                  <option value="">Select token</option>
-                  {playerTokens.map((tokenEntry) => (
-                    <option key={tokenEntry.id} value={tokenEntry.id}>{tokenEntry.name}</option>
-                  ))}
-                </select>
-                <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: '0.45rem', marginTop: '0.35rem', marginBottom: 0 }}>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(tokenDraft.darkvision)}
-                    onChange={(event) => {
-                      const nextDarkvision = event.target.checked
-                      setTokenDraft((prev) => ({ ...prev, darkvision: nextDarkvision }))
-                      if (!selectedTokenId) return
-                      callMutation('updateToken', {
-                        id: selectedTokenId,
-                        darkvision: nextDarkvision,
-                        role: 'player',
-                      }).catch((err) => setError(err.message))
-                    }}
-                  />
-                  Player has dark vision
-                </label>
-                <div style={{ marginTop: '0.45rem' }}>
-                  <div style={{ ...subSectionTitleStyle, marginBottom: '0.2rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.72rem' }}>Ring Color</div>
-                  <div style={ringButtonRowStyle}>
-                    {Object.entries(RING_COLORS).map(([colorId, colorValue]) => (
-                      <button
-                        key={`selected-player-ring:${colorId}`}
-                        type="button"
-                        title={`Ring ${colorId}`}
-                        disabled={!selectedTokenId}
-                        onClick={() => {
-                          if (!selectedTokenId) return
-                          setTokenDraft((prev) => ({ ...prev, ringColor: colorId }))
-                          callMutation('updateToken', {
-                            id: selectedTokenId,
-                            ringColor: colorId,
-                            role: 'player',
-                          }).catch((err) => setError(err.message))
-                        }}
-                        style={ringButtonStyle(tokenDraft.ringColor === colorId, colorValue, !selectedTokenId)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div style={subSectionStyle}>
                 <div style={subSectionTitleStyle}>Path + Movement</div>
                 <label style={labelStyle}>
                   Move speed (ft)
@@ -2430,9 +2495,14 @@ export default function VttClient() {
       </aside>
 
       <section ref={containerRef} style={{ border: '1px solid #2d2d2d', borderRadius: '10px', background: '#111', padding: '0.6rem' }}>
-        {!sessionActive && (
+        {sessionStatus === 'closed' && (
           <div style={{ marginBottom: '0.6rem', padding: '0.55rem 0.8rem', borderRadius: '6px', background: '#231818', border: '1px solid #4b2222', color: '#db9f9f', fontSize: '0.85rem' }}>
-            Session is not active. Start a session to broadcast the live virtual tabletop.
+            {isDm ? 'Game is closed. Select a map and switch to DM Preparing to set up.' : 'Game is currently closed.'}
+          </div>
+        )}
+        {isPlayer && sessionStatus === 'preparing' && (
+          <div style={{ marginBottom: '0.6rem', padding: '0.55rem 0.8rem', borderRadius: '6px', background: '#1d1f2b', border: '1px solid #313a5a', color: '#bfc8f7', fontSize: '0.85rem' }}>
+            DM is setting up the game.
           </div>
         )}
 
@@ -2442,7 +2512,7 @@ export default function VttClient() {
           </div>
         )}
 
-        {activeMap && sessionActive && (
+        {canRenderBoard && (
           <>
           <div style={{ position: 'relative', width: stageWidth, height: stageHeight, border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a', overflow: 'auto' }}>
             <div style={zoomOverlayStyle}>
@@ -2485,6 +2555,27 @@ export default function VttClient() {
             >
             <Layer>
               <Rect x={0} y={0} width={activeMap.width} height={activeMap.height} fill="rgba(0,0,0,0)" />
+              {isDm && (
+                <>
+                  <Rect
+                    x={activeMap.width}
+                    y={0}
+                    width={STAGING_AREA_WIDTH}
+                    height={activeMap.height}
+                    fill="rgba(26, 22, 14, 0.85)"
+                    stroke="#5a4a2b"
+                    strokeWidth={2}
+                  />
+                  <Text
+                    x={activeMap.width + 16}
+                    y={14}
+                    text="DM Staging Area"
+                    fontSize={14}
+                    fill="#e5c98a"
+                    listening={false}
+                  />
+                </>
+              )}
             </Layer>
 
             <Layer>
@@ -2548,15 +2639,18 @@ export default function VttClient() {
                   key={zone.id}
                   points={flattenPoints(zone.points)}
                   closed
-                  stroke="#222"
+                  stroke={selectedDarknessIds.has(zone.id) ? '#ffd978' : '#222'}
                   fill="rgba(0,0,0,0.34)"
-                  strokeWidth={2}
-                  listening={false}
+                  strokeWidth={selectedDarknessIds.has(zone.id) ? 3 : 2}
+                  onClick={(event) => {
+                    event.cancelBubble = true
+                    if (tool !== 'select') return
+                    selectDarknessStructure(zone.id)
+                  }}
                 />
               ))}
 
               {(activeState?.shapes ?? []).map((shape) => {
-                if (shape.kind === 'barrier' && !showBarriers) return null
                 if (shape.kind === 'darkness' && !showDarknessZones) return null
                 const preview = shapePreview?.shapeId === shape.id ? shapePreview.payload : null
                 const isBarrierSelected = shape.kind === 'barrier' && selectedBarrierIds.has(shape.id)
@@ -2591,12 +2685,18 @@ export default function VttClient() {
                         }
                       }}
                       onDragMove={(event) => {
-                        if (!(shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)) return
                         const node = event.target
                         const dx = node.x() - center.x
                         const dy = node.y() - center.y
+                        if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
+                          node.position({ x: center.x, y: center.y })
+                          setStructureDragOffset({ dx, dy })
+                          return
+                        }
+                        const payload = moveShapePayload(shape, dx, dy)
+                        if (!payload) return
                         node.position({ x: center.x, y: center.y })
-                        setStructureDragOffset({ dx, dy })
+                        setShapePreview({ shapeId: shape.id, payload })
                       }}
                       onDragEnd={async (event) => {
                         const node = event.target
@@ -2607,7 +2707,8 @@ export default function VttClient() {
                           ? (structureDragOffset?.dy ?? (node.y() - center.y))
                           : (node.y() - center.y)
                         node.position({ x: center.x, y: center.y })
-                        const payload = moveShapePayload(mergedShape, dx, dy)
+                        const payload = (shapePreview?.shapeId === shape.id ? shapePreview.payload : null)
+                          ?? moveShapePayload(shape, dx, dy)
                         if (!payload) return
                         if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                           setStructureDragOffset(null)
@@ -2631,6 +2732,7 @@ export default function VttClient() {
                         callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
                           setError(err.message)
                         })
+                        setShapePreview(null)
                       }}
                     />
                   )
@@ -2654,12 +2756,18 @@ export default function VttClient() {
                       }
                     }}
                     onDragMove={(event) => {
-                      if (!(shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)) return
                       const node = event.target
                       const dx = node.x()
                       const dy = node.y()
+                      if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
+                        node.position({ x: 0, y: 0 })
+                        setStructureDragOffset({ dx, dy })
+                        return
+                      }
+                      const payload = moveShapePayload(shape, dx, dy)
+                      if (!payload) return
                       node.position({ x: 0, y: 0 })
-                      setStructureDragOffset({ dx, dy })
+                      setShapePreview({ shapeId: shape.id, payload })
                     }}
                     onDragEnd={(event) => {
                       const node = event.target
@@ -2670,7 +2778,8 @@ export default function VttClient() {
                         ? (structureDragOffset?.dy ?? node.y())
                         : node.y()
                       node.position({ x: 0, y: 0 })
-                      const payload = moveShapePayload(mergedShape, dx, dy)
+                      const payload = (shapePreview?.shapeId === shape.id ? shapePreview.payload : null)
+                        ?? moveShapePayload(shape, dx, dy)
                       if (!payload) return
                       if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                         setStructureDragOffset(null)
@@ -2694,6 +2803,7 @@ export default function VttClient() {
                       callMutation('updateShape', { id: shape.id, ...payload }).catch((err) => {
                         setError(err.message)
                       })
+                      setShapePreview(null)
                     }}
                   />
                 )
@@ -2738,30 +2848,40 @@ export default function VttClient() {
                     strokeWidth={1}
                     dash={[4, 3]}
                   />
-                  <Circle
+                  <Text
                     key={`${selectedShape.id}:handle:rotate`}
-                    x={selectedShapeRotateHandle.handle.x}
-                    y={selectedShapeRotateHandle.handle.y}
-                    radius={6}
-                    fill="#f7d26b"
-                    stroke="#111"
-                    strokeWidth={1}
+                    x={selectedShapeRotateHandle.handle.x - 8}
+                    y={selectedShapeRotateHandle.handle.y - 8}
+                    text="↻"
+                    fontSize={16}
+                    fontStyle="bold"
+                    fill="#f3f5ff"
+                    stroke="#0b0b0b"
+                    strokeWidth={0.8}
                     draggable
                     onDragStart={(event) => {
-                      const pointer = event.target.position()
+                      const node = event.target.position()
+                      const pointer = { x: node.x + 8, y: node.y + 8 }
                       const center = selectedShapeRotateHandle.center
                       rotateDragRef.current = {
                         shapeId: selectedShape.id,
                         baseShape: selectedShape,
-                        baseAngle: Math.atan2(pointer.y - center.y, pointer.x - center.x),
+                        lastAngle: Math.atan2(pointer.y - center.y, pointer.x - center.x),
+                        accumulatedRadians: 0,
                       }
                     }}
                     onDragMove={(event) => {
                       if (!rotateDragRef.current) return
-                      const pointer = event.target.position()
+                      const node = event.target.position()
+                      const pointer = { x: node.x + 8, y: node.y + 8 }
                       const center = selectedShapeRotateHandle.center
                       const angle = Math.atan2(pointer.y - center.y, pointer.x - center.x)
-                      const deltaDegrees = ((angle - rotateDragRef.current.baseAngle) * 180) / Math.PI
+                      let delta = angle - rotateDragRef.current.lastAngle
+                      if (delta > Math.PI) delta -= Math.PI * 2
+                      if (delta < -Math.PI) delta += Math.PI * 2
+                      rotateDragRef.current.lastAngle = angle
+                      rotateDragRef.current.accumulatedRadians += delta
+                      const deltaDegrees = (rotateDragRef.current.accumulatedRadians * 180) / Math.PI
                       const payload = rotateShapePayload(rotateDragRef.current.baseShape, deltaDegrees)
                       if (!payload) return
                       setShapePreview({ shapeId: rotateDragRef.current.shapeId, payload })
@@ -2791,7 +2911,7 @@ export default function VttClient() {
                 />
               )}
 
-              {(tool === 'wall' || tool === 'barrier' || tool === 'darkness' || tool === 'calibrate') && draftPoints.map((point, index) => (
+              {(tool === 'wall' || tool === 'darkness' || tool === 'calibrate') && draftPoints.map((point, index) => (
                 <Circle
                   key={`draft:${index}`}
                   x={point.x}
@@ -2804,7 +2924,7 @@ export default function VttClient() {
                 />
               ))}
 
-              {(tool === 'wall' || tool === 'barrier' || tool === 'darkness' || tool === 'calibrate') && draftPoints.length > 0 && pointerPosition && (
+              {(tool === 'wall' || tool === 'darkness' || tool === 'calibrate') && draftPoints.length > 0 && pointerPosition && (
                 <Line
                   points={flattenPoints([draftPoints[draftPoints.length - 1], draftSnapPoint || pointerPosition])}
                   stroke={draftSnapPoint ? '#8cea76' : '#ffd56f'}
@@ -2835,14 +2955,28 @@ export default function VttClient() {
               )}
 
               {pathDraftLabel && (
-                <Text
-                  x={pathDraftLabel.x}
-                  y={pathDraftLabel.y}
-                  text={pathDraftLabel.text}
-                  fontSize={12}
-                  fill="#8fd6ff"
-                  listening={false}
-                />
+                <>
+                  <Rect
+                    x={pathDraftLabel.x - 4}
+                    y={pathDraftLabel.y - 2}
+                    width={pathDraftLabel.width}
+                    height={18}
+                    fill="rgba(8,8,10,0.82)"
+                    stroke="rgba(245,245,245,0.22)"
+                    strokeWidth={1}
+                    cornerRadius={4}
+                    listening={false}
+                  />
+                  <Text
+                    x={pathDraftLabel.x}
+                    y={pathDraftLabel.y}
+                    text={pathDraftLabel.text}
+                    fontSize={12}
+                    fontStyle="bold"
+                    fill="#f5f7ff"
+                    listening={false}
+                  />
+                </>
               )}
 
               {shapeMeasurementEntries.map((entry) => (
@@ -2908,7 +3042,7 @@ export default function VttClient() {
                 />
               ))}
 
-              {(activeState?.tokens ?? []).filter((token) => visibleTokenIds.has(token.id)).map((token) => (
+              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
                 <Circle
                   key={token.id}
                   x={token.x}
@@ -2917,14 +3051,15 @@ export default function VttClient() {
                   fill={token.id === selectedTokenId ? '#3b82f6' : '#888'}
                   stroke={RING_COLORS[token.ringColor] ?? 'transparent'}
                   strokeWidth={4}
-                  draggable
+                  draggable={isDm || token.role === 'player'}
                   onClick={(event) => {
                     event.cancelBubble = true
+                    if (isPlayer && token.role !== 'player') return
                     setSelectedTokenId(token.id)
-                    if (token.role === 'player') {
+                    if (token.role === 'player' && (isDm || isPlayer)) {
                       selectFocusedPlayer(token.id)
                     }
-                    if (token.role === 'npc') {
+                    if (token.role === 'npc' && isDm) {
                       setSelectedNpcTokenId(token.id)
                     }
                     setTokenDraft({
@@ -2938,7 +3073,7 @@ export default function VttClient() {
                 />
               ))}
 
-              {(activeState?.tokens ?? []).filter((token) => visibleTokenIds.has(token.id)).map((token) => (
+              {(activeState?.tokens ?? []).filter((token) => renderTokenIds.has(token.id)).map((token) => (
                 <Text
                   key={`${token.id}:label`}
                   x={token.x - 30}
@@ -2955,18 +3090,41 @@ export default function VttClient() {
             </Layer>
 
             <Layer listening={false}>
-              {fogRects.map((rect, index) => (
-                <Rect
-                  key={`${rect.x}:${rect.y}:${index}`}
-                  x={rect.x}
-                  y={rect.y}
-                  width={rect.width}
-                  height={rect.height}
-                  fill={rect.fill}
-                  shadowColor="rgba(0,0,0,0.95)"
-                  shadowBlur={rect.blur}
-                />
-              ))}
+              {fogRenderData && (
+                <>
+                  <Rect
+                    x={0}
+                    y={0}
+                    width={activeMap.width}
+                    height={activeMap.height}
+                    fill={fogRenderData.unseenFill}
+                  />
+                  {fogRenderData.exploredRects.map((rect, index) => (
+                    <Rect
+                      key={`fog:explored:${rect.x}:${rect.y}:${index}`}
+                      x={rect.x}
+                      y={rect.y}
+                      width={rect.width}
+                      height={rect.height}
+                      fill={fogRenderData.exploredFill}
+                    />
+                  ))}
+                  {fogRenderData.visibleRects.map((rect, index) => (
+                    <Rect
+                      key={`fog:visible:${rect.x}:${rect.y}:${index}`}
+                      x={rect.x}
+                      y={rect.y}
+                      width={rect.width}
+                      height={rect.height}
+                      cornerRadius={fogRenderData.cutoutRadius}
+                      fill="rgba(0,0,0,1)"
+                      globalCompositeOperation="destination-out"
+                      shadowColor="rgba(0,0,0,0.95)"
+                      shadowBlur={fogRenderData.cutoutBlur}
+                    />
+                  ))}
+                </>
+              )}
             </Layer>
 
             <Layer listening={false}>

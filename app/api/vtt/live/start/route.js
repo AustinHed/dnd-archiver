@@ -1,19 +1,24 @@
 import { emitVttEvent } from '@/lib/pusher'
 import {
   getLiveSession,
-  getMap,
-  getOrCreateState,
-  listCharacters,
   listMapIds,
-  mutateVttState,
   saveLiveSession,
 } from '@/lib/vttStore'
 
 export const runtime = 'nodejs'
 
+const VALID_STATUSES = new Set(['preparing', 'active'])
+
 export async function POST(request) {
   const body = await request.json().catch(() => ({}))
+  const actorRole = body?.actorRole === 'dm' ? 'dm' : 'player'
+  if (actorRole !== 'dm') {
+    return Response.json({ error: 'Only the Dungeon Master can update game state.' }, { status: 403 })
+  }
+
   const requestedMapId = body?.mapId
+  const requestedStatus = String(body?.status ?? 'active').toLowerCase()
+  const status = VALID_STATUSES.has(requestedStatus) ? requestedStatus : 'active'
 
   const [live, mapIds] = await Promise.all([getLiveSession(), listMapIds()])
 
@@ -24,54 +29,22 @@ export async function POST(request) {
 
   const nextLive = {
     ...live,
-    active: true,
+    active: status === 'active',
+    status,
     activeMapId,
-    startedAt: new Date().toISOString(),
-    stoppedAt: null,
+    startedAt: status === 'active' ? new Date().toISOString() : live.startedAt,
+    stoppedAt: status === 'active' ? null : live.stoppedAt,
   }
 
   await saveLiveSession(nextLive)
 
-  if (activeMapId) {
-    const [map, state, characters] = await Promise.all([
-      getMap(activeMapId),
-      getOrCreateState(activeMapId),
-      listCharacters(),
-    ])
-
-    const hasPlayerTokens = (state?.tokens ?? []).some((token) => token.role === 'player')
-
-    if (map && characters.length && !hasPlayerTokens) {
-      const spacing = 90
-      const centerX = map.width / 2
-      const y = map.height / 2
-      const startX = centerX - ((characters.length - 1) * spacing) / 2
-
-      await mutateVttState(activeMapId, (current) => ({
-        ...current,
-        tokens: [
-          ...(current.tokens ?? []),
-          ...characters.map((entry, index) => ({
-            id: crypto.randomUUID(),
-            role: 'player',
-            name: entry.name,
-            size: 'medium',
-            ringColor: 'blue',
-            darkvision: false,
-            x: startX + index * spacing,
-            y,
-          })),
-        ],
-      }))
-    }
-  }
-
-  await emitVttEvent('session.started', {
+  const eventName = status === 'active' ? 'session.started' : 'map.updated'
+  await emitVttEvent(eventName, {
     mapId: activeMapId,
     timestamp: new Date().toISOString(),
     version: null,
     actorId: body?.actorId ?? 'system',
-    patch: { active: true, activeMapId },
+    patch: { active: status === 'active', status, activeMapId },
   })
 
   return Response.json({ live: nextLive })
