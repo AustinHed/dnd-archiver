@@ -910,11 +910,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     [activeState?.tokens, selectedTokenId],
   )
 
+  const focusedPlayerToken = useMemo(
+    () => activeState?.tokens?.find((token) => token.id === focusedPlayerTokenId && token.role === 'player') ?? null,
+    [activeState?.tokens, focusedPlayerTokenId],
+  )
+
   const visionToken = useMemo(() => {
-    if (viewMode !== 'player') return selectedToken
-    const tokenId = focusedPlayerTokenId === 'dm' ? selectedTokenId : focusedPlayerTokenId
-    return activeState?.tokens?.find((token) => token.id === tokenId) ?? selectedToken ?? null
-  }, [activeState?.tokens, focusedPlayerTokenId, selectedToken, selectedTokenId, viewMode])
+    if (viewMode === 'player') return focusedPlayerToken
+    return selectedToken
+  }, [focusedPlayerToken, selectedToken, viewMode])
 
   useEffect(() => {
     if (!selectedToken) return
@@ -1789,14 +1793,26 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     const gridSize = visibility.gridSize
 
     for (let row = 0; row < visibility.rows; row += 1) {
-      for (let col = 0; col < visibility.cols; col += 1) {
+      let col = 0
+      while (col < visibility.cols) {
         const index = row * visibility.cols + col
-        if (visibleSet.has(index)) continue
+        if (visibleSet.has(index)) {
+          col += 1
+          continue
+        }
         const seen = exploredSet.has(index)
+        const startCol = col
+        col += 1
+        while (col < visibility.cols) {
+          const nextIndex = row * visibility.cols + col
+          if (visibleSet.has(nextIndex)) break
+          if (exploredSet.has(nextIndex) !== seen) break
+          col += 1
+        }
         fogRects.push({
-          x: col * gridSize,
+          x: startCol * gridSize,
           y: row * gridSize,
-          width: gridSize,
+          width: (col - startCol) * gridSize,
           height: gridSize,
           seen,
         })
@@ -1806,19 +1822,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (isDm && viewMode === 'dm') {
       return {
         fogRects,
-        unseenFill: 'rgba(0,0,0,0.32)',
-        exploredFill: 'rgba(0,0,0,0.32)',
-        unseenBlur: 18,
-        exploredBlur: 6,
+        unseenFill: 'rgba(0,0,0,0.24)',
+        exploredFill: 'rgba(0,0,0,0.24)',
       }
     }
 
     return {
       fogRects,
-      unseenFill: 'rgba(0,0,0,0.58)',
-      exploredFill: 'rgba(0,0,0,0.78)',
-      unseenBlur: 42,
-      exploredBlur: 10,
+      unseenFill: 'rgba(0,0,0,0.78)',
+      exploredFill: 'rgba(0,0,0,0.52)',
     }
   }, [activeState?.fog, isDm, viewMode, visibility])
 
@@ -2381,7 +2393,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                     />
                     <IconTileButton
                       icon="🏃"
-                      label="Animate Move"
+                      label="Move Token"
                       onClick={finalizePathMove}
                       tone="success"
                       size="small"
@@ -2617,10 +2629,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                           setStructureDragOffset({ dx, dy })
                           return
                         }
-                        const payload = moveShapePayload(shape, dx, dy)
-                        if (!payload) return
-                        node.position({ x: center.x, y: center.y })
-                        setShapePreview({ shapeId: shape.id, payload })
                       }}
                       onDragEnd={async (event) => {
                         const node = event.target
@@ -2631,8 +2639,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                           ? (structureDragOffset?.dy ?? (node.y() - center.y))
                           : (node.y() - center.y)
                         node.position({ x: center.x, y: center.y })
-                        const payload = (shapePreview?.shapeId === shape.id ? shapePreview.payload : null)
-                          ?? moveShapePayload(shape, dx, dy)
+                        const payload = moveShapePayload(shape, dx, dy)
                         if (!payload) return
                         if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                           setStructureDragOffset(null)
@@ -2680,30 +2687,25 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       }
                     }}
                     onDragMove={(event) => {
-                      const node = event.target
-                      const dx = node.x()
-                      const dy = node.y()
+                        const node = event.target
+                        const dx = node.x()
+                        const dy = node.y()
                       if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                         node.position({ x: 0, y: 0 })
                         setStructureDragOffset({ dx, dy })
                         return
                       }
-                      const payload = moveShapePayload(shape, dx, dy)
-                      if (!payload) return
-                      node.position({ x: 0, y: 0 })
-                      setShapePreview({ shapeId: shape.id, payload })
                     }}
                     onDragEnd={(event) => {
-                      const node = event.target
+                        const node = event.target
                       const dx = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
                         ? (structureDragOffset?.dx ?? node.x())
                         : node.x()
-                      const dy = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
-                        ? (structureDragOffset?.dy ?? node.y())
-                        : node.y()
-                      node.position({ x: 0, y: 0 })
-                      const payload = (shapePreview?.shapeId === shape.id ? shapePreview.payload : null)
-                        ?? moveShapePayload(shape, dx, dy)
+                        const dy = (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected)
+                          ? (structureDragOffset?.dy ?? node.y())
+                          : node.y()
+                        node.position({ x: 0, y: 0 })
+                      const payload = moveShapePayload(shape, dx, dy)
                       if (!payload) return
                       if (shape.kind === 'barrier' && tool === 'select' && isBarrierSelected) {
                         setStructureDragOffset(null)
@@ -3067,8 +3069,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
                       width={rect.width}
                       height={rect.height}
                       fill={rect.seen ? fogRenderData.exploredFill : fogRenderData.unseenFill}
-                      shadowColor="rgba(0,0,0,0.95)"
-                      shadowBlur={rect.seen ? fogRenderData.exploredBlur : fogRenderData.unseenBlur}
                     />
                   ))}
                 </>
