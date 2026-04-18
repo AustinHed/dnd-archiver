@@ -41,8 +41,6 @@ const TOOL_ICONS = {
 
 const MAP_SETUP_TOOL_IDS = ['select', 'wall', 'darkness', 'calibrate']
 const DM_TOOL_IDS = ['npcToken']
-const GENERAL_TOOL_IDS = ['measure', 'shape', 'ping']
-const PLAYER_TOOL_IDS = ['move', 'path']
 
 const RING_COLORS = {
   clear: 'transparent',
@@ -1398,26 +1396,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     await commitDraftPoints(draftPoints, tool)
   }, [commitDraftPoints, draftPoints, tool])
 
-  const saveCharacter = useCallback(async () => {
-    if (!activeMap || !clientId) return
-
-    try {
-      const data = await callMutation('setCharacter', {
-        clientId,
-        moveSpeed: Number(character.moveSpeed) || 30,
-        darkvision: Boolean(character.darkvision),
-      })
-      if (data?.character) {
-        setCharacter({
-          moveSpeed: Number(data.character.moveSpeed) || 30,
-          darkvision: Boolean(data.character.darkvision),
-        })
-      }
-    } catch (err) {
-      setError(err.message)
-    }
-  }, [activeMap, callMutation, character.darkvision, character.moveSpeed, clientId])
-
   const placeToken = useCallback(async (point) => {
     const playerName = tokenDraft.name || 'Player'
     const existingPlayer = (activeState?.tokens ?? []).find((token) => token.role === 'player' && token.name === playerName)
@@ -1849,15 +1827,39 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (!isDm && activeDmPanel) setActiveDmPanel('')
   }, [activeDmPanel, isDm])
 
+  const nextNpcStagingPoint = useMemo(() => {
+    if (!isDm || !activeMap) return null
+    const index = npcTokens.length
+    const cols = 3
+    const spacing = 56
+    const col = index % cols
+    const row = Math.floor(index / cols)
+    return {
+      x: activeMap.width + 30 + (col * spacing),
+      y: 68 + (row * spacing),
+    }
+  }, [activeMap, isDm, npcTokens.length])
+
   const togglePrimaryPanel = useCallback((panelId) => {
     setActivePrimaryPanel((prev) => (prev === panelId ? '' : panelId))
     setActiveDmPanel('')
+    if (panelId === 'measure' || panelId === 'shape' || panelId === 'ping') {
+      setTool(panelId)
+      setStructureDragOffset(null)
+    }
+    if (panelId === 'movementPath') {
+      setTool('path')
+      setStructureDragOffset(null)
+    }
   }, [])
 
   const toggleDmPanel = useCallback((panelId) => {
     setActiveDmPanel((prev) => (prev === panelId ? '' : panelId))
     setActivePrimaryPanel('')
-  }, [])
+    if (panelId === 'addNpc' && nextNpcStagingPoint) {
+      placeNpcToken(nextNpcStagingPoint)
+    }
+  }, [nextNpcStagingPoint, placeNpcToken])
 
   const selectTool = useCallback((toolId) => {
     if (!isDm && (MAP_SETUP_TOOL_IDS.includes(toolId) || DM_TOOL_IDS.includes(toolId) || toolId === 'token' || toolId === 'npcToken')) {
@@ -2126,6 +2128,7 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
   const activePanelOptions = activePanelType === 'dm' ? dmRailOptions : primaryRailOptions
   const activePanelLabel = activePanelOptions.find((option) => option.id === activePanelId)?.label || ''
   const movementLockedForDm = isDm && viewMode !== 'player'
+  const canAnimatePath = pathPoints.length >= 2
 
   function renderFocusControls() {
     if (isDm) {
@@ -2146,39 +2149,49 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
           >
             DM View
           </button>
-          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'nowrap' }}>
-            {playerTokens.map((token) => (
-              <button
-                key={token.id}
-                type="button"
-                onClick={() => selectFocusedPlayer(token.id)}
-                style={{
-                  ...focusPillStyle,
-                  flex: 1,
-                  minWidth: 0,
-                  background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
-                  borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
-                }}
-              >
-                {token.name}
-              </button>
-            ))}
-          </div>
+          {playerTokens.map((token) => (
+            <button
+              key={token.id}
+              type="button"
+              onClick={() => selectFocusedPlayer(token.id)}
+              style={{
+                ...focusPillStyle,
+                width: '100%',
+                minHeight: '40px',
+                background: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#2a4f82' : '#1a1a1a',
+                borderColor: (focusedPlayerTokenId === token.id && viewMode === 'player') ? '#7caeff' : '#3a3a3a',
+              }}
+            >
+              {token.name}
+            </button>
+          ))}
         </div>
       )
     }
 
+    if (!playerTokens.length) {
+      return <p style={{ margin: 0, color: '#888', fontSize: '0.75rem' }}>No player tokens available yet.</p>
+    }
+
     return (
-      <select
-        value={focusedPlayerTokenId}
-        onChange={(event) => selectFocusedPlayer(event.target.value)}
-        style={inputStyle}
-      >
-        <option value="">Select your character view</option>
+      <div style={{ display: 'grid', gap: '0.4rem' }}>
         {playerTokens.map((token) => (
-          <option key={token.id} value={token.id}>{token.name}</option>
+          <button
+            key={token.id}
+            type="button"
+            onClick={() => selectFocusedPlayer(token.id)}
+            style={{
+              ...focusPillStyle,
+              width: '100%',
+              minHeight: '40px',
+              background: (focusedPlayerTokenId === token.id) ? '#2a4f82' : '#1a1a1a',
+              borderColor: (focusedPlayerTokenId === token.id) ? '#7caeff' : '#3a3a3a',
+            }}
+          >
+            {token.name}
+          </button>
         ))}
-      </select>
+      </div>
     )
   }
 
@@ -2189,31 +2202,15 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
 
     return (
       <>
-        <div style={toolGridStyle}>
-          {PLAYER_TOOL_IDS.map((toolId) => (
-            <IconTileButton
-              key={toolId}
-              icon={TOOL_ICONS[toolId]}
-              label={TOOL_OPTIONS[toolId].label}
-              onClick={() => selectTool(toolId)}
-              active={tool === toolId}
-            />
-          ))}
-        </div>
         <div style={{ display: 'grid', gap: '0.3rem' }}>
           <div style={iconTileGridStyle}>
-            <IconTileButton
-              icon="📍"
-              label="Start Path"
-              onClick={() => setPathPoints(selectedToken ? [{ x: selectedToken.x, y: selectedToken.y }] : [])}
-              tone="muted"
-              size="small"
-            />
             <IconTileButton
               icon="🏃"
               label="Animate Move"
               onClick={finalizePathMove}
-              tone="success"
+              tone={canAnimatePath ? 'success' : 'muted'}
+              disabled={!canAnimatePath}
+              active={canAnimatePath}
               size="small"
             />
             <IconTileButton
@@ -2228,17 +2225,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
             Used: {formatFeet(pathFeet)} ft | Remaining: {formatFeet(movementRemaining)} ft
           </div>
         </div>
-        <label style={labelStyle}>
-          Move speed (ft)
-          <input
-            type="number"
-            min="1"
-            value={character.moveSpeed}
-            onChange={(event) => setCharacter((prev) => ({ ...prev, moveSpeed: Number(event.target.value) || 30 }))}
-            style={inputStyle}
-          />
-        </label>
-        <IconTileButton icon="⚙️" label="Save Move Speed" onClick={saveCharacter} disabled={!activeMap} tone="primary" fullWidth />
       </>
     )
   }
@@ -2247,13 +2233,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (activePrimaryPanel === 'measure') {
       return (
         <>
-          <IconTileButton
-            icon={TOOL_ICONS.measure}
-            label={TOOL_OPTIONS.measure.label}
-            onClick={() => selectTool('measure')}
-            active={tool === 'measure'}
-            fullWidth
-          />
           <p style={{ margin: 0, color: '#888', fontSize: '0.75rem' }}>
             Click and drag on map to measure distance.
           </p>
@@ -2264,13 +2243,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (activePrimaryPanel === 'shape') {
       return (
         <>
-          <IconTileButton
-            icon={TOOL_ICONS.shape}
-            label={TOOL_OPTIONS.shape.label}
-            onClick={() => selectTool('shape')}
-            active={tool === 'shape'}
-            fullWidth
-          />
           <div style={{ ...subSectionTitleStyle, marginBottom: '0.28rem', textTransform: 'none', letterSpacing: 0, fontSize: '0.75rem' }}>New Shape Type</div>
           <div style={toolGridStyle}>
             {SHAPE_TYPE_OPTIONS.map((shapeType) => (
@@ -2318,13 +2290,6 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
     if (activePrimaryPanel === 'ping') {
       return (
         <>
-          <IconTileButton
-            icon={TOOL_ICONS.ping}
-            label={TOOL_OPTIONS.ping.label}
-            onClick={() => selectTool('ping')}
-            active={tool === 'ping'}
-            fullWidth
-          />
           <p style={{ margin: 0, color: '#888', fontSize: '0.75rem' }}>
             Select ping, then click on map to signal location.
           </p>
@@ -2478,9 +2443,11 @@ export default function VttClient({ mode = 'dm', initialMapId = '' }) {
         <>
           <IconTileButton
             icon={TOOL_ICONS.npcToken}
-            label={TOOL_OPTIONS.npcToken.label}
-            onClick={() => selectTool('npcToken')}
-            active={tool === 'npcToken'}
+            label="Add NPC To Staging"
+            onClick={() => {
+              if (!nextNpcStagingPoint) return
+              placeNpcToken(nextNpcStagingPoint)
+            }}
             fullWidth
           />
           <input
@@ -3410,21 +3377,21 @@ function iconTileButtonStyle({ active, disabled, tone, size, fullWidth }) {
   return {
     width: '100%',
     minHeight: fullWidth
-      ? (isLarge ? '88px' : isXSmall ? '46px' : '74px')
-      : (isXSmall ? '42px' : isSmall ? '72px' : isLarge ? '102px' : '86px'),
+      ? (isLarge ? '46px' : isXSmall ? '24px' : '38px')
+      : (isXSmall ? '22px' : isSmall ? '36px' : isLarge ? '52px' : '44px'),
     aspectRatio: fullWidth ? 'auto' : '1 / 1',
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: isXSmall ? '0.08rem' : isSmall ? '0.24rem' : '0.32rem',
-    borderRadius: isXSmall ? '11px' : isSmall ? '14px' : '16px',
+    gap: isXSmall ? '0.02rem' : isSmall ? '0.1rem' : '0.14rem',
+    borderRadius: isXSmall ? '6px' : isSmall ? '8px' : '9px',
     border: `1px solid ${active ? palette.activeBorder : palette.border}`,
     background: active ? palette.activeBg : palette.bg,
     color: active ? palette.activeText : palette.text,
     opacity: disabled ? 0.48 : 1,
     cursor: disabled ? 'not-allowed' : 'pointer',
-    padding: isXSmall ? '0.2rem 0.2rem' : isSmall ? '0.34rem 0.3rem' : '0.48rem 0.42rem',
+    padding: isXSmall ? '0.08rem 0.08rem' : isSmall ? '0.16rem 0.16rem' : '0.22rem 0.2rem',
     lineHeight: 1.12,
     textAlign: 'center',
     transition: 'background 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease',
@@ -3461,12 +3428,12 @@ const subSectionTitleStyle = {
 function iconTileIconStyle(size = 'normal') {
   if (size === 'xsmall') {
     return {
-      fontSize: '0.86rem',
+      fontSize: '0.52rem',
       lineHeight: 1,
     }
   }
   return {
-    fontSize: '1.06rem',
+    fontSize: '0.66rem',
     lineHeight: 1,
   }
 }
@@ -3474,13 +3441,13 @@ function iconTileIconStyle(size = 'normal') {
 function iconTileLabelStyle(size = 'normal') {
   if (size === 'xsmall') {
     return {
-      fontSize: '0.54rem',
+      fontSize: '0.44rem',
       fontWeight: 600,
       color: 'inherit',
     }
   }
   return {
-    fontSize: '0.67rem',
+    fontSize: '0.48rem',
     fontWeight: 600,
     color: 'inherit',
   }
@@ -3533,9 +3500,9 @@ const railStackStyle = {
 }
 
 const railButtonStyle = {
-  width: '36px',
-  height: '36px',
-  borderRadius: '10px',
+  width: '28px',
+  height: '28px',
+  borderRadius: '8px',
   border: '1px solid #4d4d4d',
   background: '#1a1a1a',
   color: '#e5e5e5',
@@ -3546,7 +3513,7 @@ const railButtonStyle = {
 }
 
 const railButtonIconStyle = {
-  fontSize: '1rem',
+  fontSize: '0.78rem',
   lineHeight: 1,
 }
 
