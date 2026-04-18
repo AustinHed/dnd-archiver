@@ -15,7 +15,6 @@ const Rect = dynamic(() => import('react-konva').then((mod) => mod.Rect), { ssr:
 const Line = dynamic(() => import('react-konva').then((mod) => mod.Line), { ssr: false })
 const Circle = dynamic(() => import('react-konva').then((mod) => mod.Circle), { ssr: false })
 const Text = dynamic(() => import('react-konva').then((mod) => mod.Text), { ssr: false })
-const KImage = dynamic(() => import('react-konva').then((mod) => mod.Image), { ssr: false })
 
 const TOOL_OPTIONS = [
   { id: 'move', label: 'Move Token' },
@@ -72,59 +71,6 @@ function buildRectanglePoints(x, y, width = 120, height = 80) {
   ]
 }
 
-function useMapImage(url) {
-  const [image, setImage] = useState(null)
-  const [imageError, setImageError] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-
-    if (!url) {
-      setImage(null)
-      setImageError('')
-      return
-    }
-
-    const tryLoad = (attempt) => {
-      const img = new window.Image()
-      img.decoding = 'async'
-      if (attempt > 0) {
-        // Secondary attempt keeps CORS mode for hosts that require it.
-        img.crossOrigin = 'anonymous'
-      }
-
-      img.onload = () => {
-        if (cancelled) return
-        setImage(img)
-        setImageError('')
-      }
-
-      img.onerror = () => {
-        if (cancelled) return
-        if (attempt === 0) {
-          const separator = url.includes('?') ? '&' : '?'
-          tryLoad(1, `${url}${separator}retry=${Date.now()}`)
-          return
-        }
-        setImage(null)
-        setImageError('Map image could not be loaded. Check Blob access/store settings.')
-      }
-
-      img.src = attempt > 0
-        ? `${url}${url.includes('?') ? '&' : '?'}retry=${Date.now()}`
-        : url
-    }
-
-    tryLoad(0)
-
-    return () => {
-      cancelled = true
-    }
-  }, [url])
-
-  return { image, imageError }
-}
-
 function getClientId() {
   if (typeof window === 'undefined') return 'server'
 
@@ -157,6 +103,7 @@ export default function VttClient() {
   const [character, setCharacter] = useState({ moveSpeed: 30, darkvision: false })
   const [viewMode, setViewMode] = useState('player')
   const [clientId, setClientId] = useState('')
+  const [mapRenderError, setMapRenderError] = useState('')
 
   const containerRef = useRef(null)
   const [stageWidth, setStageWidth] = useState(1100)
@@ -303,7 +250,6 @@ export default function VttClient() {
 
   const activeMap = bundle?.activeMap ?? null
   const activeState = bundle?.activeState ?? null
-  const { image: mapImage, imageError } = useMapImage(activeMap?.assetUrl)
 
   const feetPerPx = useMemo(() => feetPerPixelFromCalibration(activeMap?.calibration), [activeMap?.calibration])
 
@@ -801,6 +747,10 @@ export default function VttClient() {
     return rects
   }, [activeState?.fog, viewMode, visibility])
 
+  useEffect(() => {
+    setMapRenderError('')
+  }, [activeMap?.assetUrl])
+
   if (loading) {
     return <p style={{ color: '#888' }}>Loading VTT...</p>
   }
@@ -820,9 +770,9 @@ export default function VttClient() {
             {error}
           </div>
         )}
-        {!error && imageError && (
+        {!error && mapRenderError && (
           <div style={{ marginBottom: '0.8rem', color: '#ffb6b6', background: '#2b1414', border: '1px solid #5a2323', borderRadius: '6px', padding: '0.45rem 0.6rem', fontSize: '0.8rem' }}>
-            {imageError}
+            {mapRenderError}
           </div>
         )}
 
@@ -1061,10 +1011,27 @@ export default function VttClient() {
         )}
 
         {activeMap && sessionActive && (
-          <Stage width={stageWidth} height={stageHeight} onClick={onStageClick} style={{ border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a' }}>
+          <div style={{ position: 'relative', width: stageWidth, height: stageHeight, border: '1px solid #222', borderRadius: '8px', background: '#0a0a0a', overflow: 'hidden' }}>
+            <img
+              src={activeMap.assetUrl}
+              alt={`Map ${activeMap.name}`}
+              draggable={false}
+              onError={() => setMapRenderError('Map image could not be loaded. Confirm the Blob URL is publicly readable.')}
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                width: activeMap.width,
+                height: activeMap.height,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                userSelect: 'none',
+                pointerEvents: 'none',
+              }}
+            />
+            <Stage width={stageWidth} height={stageHeight} onClick={onStageClick} style={{ position: 'absolute', left: 0, top: 0, background: 'transparent' }}>
             <Layer>
-              <Rect x={0} y={0} width={activeMap.width} height={activeMap.height} fill="#0a0a0a" />
-              {mapImage && <KImage image={mapImage} x={0} y={0} width={activeMap.width} height={activeMap.height} />}
+              <Rect x={0} y={0} width={activeMap.width} height={activeMap.height} fill="rgba(0,0,0,0)" />
             </Layer>
 
             <Layer>
@@ -1232,7 +1199,8 @@ export default function VttClient() {
                 />
               ))}
             </Layer>
-          </Stage>
+            </Stage>
+          </div>
         )}
 
         <div style={{ marginTop: '0.55rem', display: 'flex', justifyContent: 'space-between', color: '#777', fontSize: '0.78rem' }}>
