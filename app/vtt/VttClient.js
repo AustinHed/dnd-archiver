@@ -74,20 +74,29 @@ function buildRectanglePoints(x, y, width = 120, height = 80) {
 
 function useMapImage(url) {
   const [image, setImage] = useState(null)
+  const [imageError, setImageError] = useState('')
 
   useEffect(() => {
     if (!url) {
       setImage(null)
+      setImageError('')
       return
     }
 
     const img = new window.Image()
     img.crossOrigin = 'anonymous'
     img.src = url
-    img.onload = () => setImage(img)
+    img.onload = () => {
+      setImage(img)
+      setImageError('')
+    }
+    img.onerror = () => {
+      setImage(null)
+      setImageError('Map image could not be loaded. Check Blob access/store settings.')
+    }
   }, [url])
 
-  return image
+  return { image, imageError }
 }
 
 function getClientId() {
@@ -268,7 +277,7 @@ export default function VttClient() {
 
   const activeMap = bundle?.activeMap ?? null
   const activeState = bundle?.activeState ?? null
-  const mapImage = useMapImage(activeMap?.assetUrl)
+  const { image: mapImage, imageError } = useMapImage(activeMap?.assetUrl)
 
   const feetPerPx = useMemo(() => feetPerPixelFromCalibration(activeMap?.calibration), [activeMap?.calibration])
 
@@ -425,6 +434,11 @@ export default function VttClient() {
       canvas.height = Math.round(viewport.height)
 
       const context = canvas.getContext('2d', { alpha: false })
+      if (!context) {
+        throw new Error('Unable to create a canvas context for PDF rendering.')
+      }
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
       await page.render({ canvasContext: context, viewport }).promise
 
       const imageBlob = await new Promise((resolve) => {
@@ -775,6 +789,11 @@ export default function VttClient() {
         {error && (
           <div style={{ marginBottom: '0.8rem', color: '#ff8b8b', background: '#2b1414', border: '1px solid #5a2323', borderRadius: '6px', padding: '0.45rem 0.6rem', fontSize: '0.8rem' }}>
             {error}
+          </div>
+        )}
+        {!error && imageError && (
+          <div style={{ marginBottom: '0.8rem', color: '#ffb6b6', background: '#2b1414', border: '1px solid #5a2323', borderRadius: '6px', padding: '0.45rem 0.6rem', fontSize: '0.8rem' }}>
+            {imageError}
           </div>
         )}
 
