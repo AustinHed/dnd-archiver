@@ -61,7 +61,7 @@ function normalizeShape(raw, defaults = {}) {
 function eventForOp(op) {
   if (op === 'ping') return 'ping.created'
   if (op === 'setCharacter') return 'character.updated'
-  if (op.startsWith('setFog') || op.startsWith('mergeFog')) return 'fog.updated'
+  if (op.startsWith('setFog') || op.startsWith('mergeFog') || op === 'resetFogExplored') return 'fog.updated'
   if (op.includes('Token')) return 'token.updated'
   if (op.includes('Shape') || op.includes('Wall') || op.includes('Darkness')) return 'shape.updated'
   return 'map.updated'
@@ -173,6 +173,29 @@ function applyMutation(currentState, op, payload) {
       const x = Number(payload?.x)
       const y = Number(payload?.y)
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+      const role = payload?.role ?? 'npc'
+      const name = payload?.name ?? 'Token'
+
+      // Player tokens are unique by character name per map.
+      if (role === 'player') {
+        const duplicate = (currentState.tokens ?? []).find((token) => token.role === 'player' && token.name === name)
+        if (duplicate) {
+          return {
+            ...currentState,
+            tokens: (currentState.tokens ?? []).map((token) => (
+              token.id === duplicate.id
+                ? {
+                    ...token,
+                    x,
+                    y,
+                    ringColor: payload?.ringColor ?? token.ringColor,
+                    darkvision: payload?.darkvision !== undefined ? Boolean(payload.darkvision) : token.darkvision,
+                  }
+                : token
+            )),
+          }
+        }
+      }
 
       return {
         ...currentState,
@@ -180,10 +203,10 @@ function applyMutation(currentState, op, payload) {
           ...(currentState.tokens ?? []),
           {
             id: uuidv4(),
-            name: payload?.name ?? 'Token',
+            name,
             size: payload?.size ?? 'medium',
             ringColor: payload?.ringColor ?? 'clear',
-            role: payload?.role ?? 'npc',
+            role,
             darkvision: Boolean(payload?.darkvision),
             x,
             y,
@@ -261,6 +284,15 @@ function applyMutation(currentState, op, payload) {
           rows: Number(payload?.rows) || currentState.fog?.rows || 0,
           gridSize: Number(payload?.gridSize) || currentState.fog?.gridSize || 24,
           exploredCells: mergeExploredCells(currentState.fog?.exploredCells, incoming),
+        },
+      }
+    }
+    case 'resetFogExplored': {
+      return {
+        ...currentState,
+        fog: {
+          ...(currentState.fog ?? {}),
+          exploredCells: [],
         },
       }
     }
