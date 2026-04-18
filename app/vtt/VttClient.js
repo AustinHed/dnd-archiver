@@ -44,6 +44,16 @@ const TOKEN_RADIUS = {
   large: 24,
 }
 
+function resolvePdfWorkerSrc(version) {
+  try {
+    // Prefer a bundled worker so uploads do not depend on third-party CDNs.
+    return new URL('pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url).toString()
+  } catch {
+    // Fallback for environments that cannot resolve the bundled URL.
+    return `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/legacy/build/pdf.worker.min.mjs`
+  }
+}
+
 function flattenPoints(points = []) {
   return points.flatMap((point) => [point.x, point.y])
 }
@@ -402,7 +412,7 @@ export default function VttClient() {
 
     try {
       const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`
+      pdfjs.GlobalWorkerOptions.workerSrc = resolvePdfWorkerSrc(pdfjs.version)
 
       const raw = await file.arrayBuffer()
       const loadingTask = pdfjs.getDocument({ data: raw })
