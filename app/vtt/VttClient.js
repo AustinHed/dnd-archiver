@@ -469,6 +469,9 @@ export default function VttClient() {
         throw new Error(data.error || 'Map upload failed.')
       }
 
+      if (data?.map?.id) {
+        setStartMapId(data.map.id)
+      }
       await refresh()
       setMapName('')
     } catch (err) {
@@ -805,7 +808,9 @@ export default function VttClient() {
           >
             <option value="">Select map</option>
             {(bundle?.maps ?? []).map((map) => (
-              <option key={map.id} value={map.id}>{map.name}</option>
+              <option key={map.id} value={map.id}>
+                {map.name} ({map.id.slice(0, 6)})
+              </option>
             ))}
           </select>
           <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.6rem' }}>

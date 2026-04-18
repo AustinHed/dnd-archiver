@@ -57,9 +57,7 @@ export async function POST(request) {
   })
 
   const live = await getLiveSession()
-  if (!live.activeMapId) {
-    await saveLiveSession({ ...live, activeMapId: map.id })
-  }
+  await saveLiveSession({ ...live, activeMapId: map.id })
 
   await emitVttEvent('map.updated', {
     mapId: map.id,
